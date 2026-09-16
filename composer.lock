@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "b52295f814688f9625d9ea214c747574",
+    "content-hash": "10c59b88f1d86da59c962fca2daed2f2",
     "packages": [
         {
             "name": "brick/math",
@@ -141,11 +141,17 @@
         },
         {
             "name": "cboxdk/sync",
-            "version": "0.1.0",
+            "version": "v0.1.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/cboxdk/sync.git",
+                "reference": "1cc391d2666e79d2de6b93d1c85ff7a097eeb4ca"
+            },
             "dist": {
-                "type": "path",
-                "url": "../sync",
-                "reference": "573340517b02a3a76076d57f0fabbe877955d2a8"
+                "type": "zip",
+                "url": "https://api.github.com/repos/cboxdk/sync/zipball/1cc391d2666e79d2de6b93d1c85ff7a097eeb4ca",
+                "reference": "1cc391d2666e79d2de6b93d1c85ff7a097eeb4ca",
+                "shasum": ""
             },
             "require": {
                 "ext-pdo": "*",
@@ -162,66 +168,16 @@
                     "Cbox\\Sync\\": "src/"
                 }
             },
-            "autoload-dev": {
-                "psr-4": {
-                    "Cbox\\Sync\\Tests\\": "tests/"
-                }
-            },
-            "scripts": {
-                "test": [
-                    "pest"
-                ],
-                "lint": [
-                    "pint --test"
-                ],
-                "format": [
-                    "pint"
-                ],
-                "analyse": [
-                    "phpstan analyse --no-progress --memory-limit=1G"
-                ],
-                "license-check": [
-                    "@php bin/check-licenses.php"
-                ],
-                "sbom": [
-                    "@php bin/generate-sbom.php"
-                ],
-                "simulate": [
-                    "@php bin/simulate.php"
-                ],
-                "qa": [
-                    "@lint",
-                    "@analyse",
-                    "@test",
-                    "@test:rehydrating",
-                    "@test:sqlite",
-                    "@license-check",
-                    "@security-audit"
-                ],
-                "security-audit": [
-                    "@composer audit --locked"
-                ],
-                "docs:requirements": [
-                    "@php bin/generate-requirements.php"
-                ],
-                "test:rehydrating": [
-                    "SYNC_STORE=rehydrating pest"
-                ],
-                "test:sqlite": [
-                    "SYNC_STORE=sqlite pest"
-                ],
-                "concurrency": [
-                    "@php bin/concurrency.php"
-                ]
-            },
+            "notification-url": "https://packagist.org/downloads/",
             "license": [
                 "MIT"
             ],
             "description": "Framework-independent sync engine with explicit field conflicts for offline-first applications",
-            "transport-options": {
-                "symlink": true,
-                "relative": true
-            }
+            "support": {
+                "issues": "https://github.com/cboxdk/sync/issues",
+                "source": "https://github.com/cboxdk/sync/tree/v0.1.0"
+            },
+            "time": "2026-09-16T13:38:00+00:00"
         },
         {
             "name": "dflydev/dot-access-data",
@@ -10264,9 +10220,9 @@
         }
     ],
     "aliases": [],
-    "minimum-stability": "dev",
+    "minimum-stability": "stable",
     "stability-flags": {},
-    "prefer-stable": true,
+    "prefer-stable": false,
     "prefer-lowest": false,
     "platform": {
         "php": "^8.4",

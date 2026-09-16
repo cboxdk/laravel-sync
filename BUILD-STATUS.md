@@ -16,4 +16,4 @@ Verification on 2026-09-16:
 - Pint, PHPStan max with larastan, 137 dependency licenses, locked dependency audit.
 - SBOM and generated requirements reproduce without drift.
 
-Limits: no HTTP endpoints, no wire format, no UI, no queue integration. The host owns routing, authentication and space resolution. A space accepts one concurrent writer by design. Retention is configurable but never automatic. `cboxdk/sync` is consumed from a local path repository until it is tagged; the constraint is already `^0.1` and only the repository entry has to be removed.
+Limits: no HTTP endpoints, no wire format, no UI, no queue integration. The host owns routing, authentication and space resolution. A space accepts one concurrent writer by design. Retention is configurable but never automatic. Requires `cboxdk/sync` `^0.1`, resolved from Packagist. Composer's caret is narrow below 1.0, so a future sync 0.2 needs this constraint widened.

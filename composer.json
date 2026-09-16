@@ -18,18 +18,6 @@
         "orchestra/testbench": "^10.0 || ^11.0",
         "pestphp/pest": "^3.5 || ^4.0"
     },
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../sync",
-            "options": {
-                "symlink": true,
-                "versions": {
-                    "cboxdk/sync": "0.1.0"
-                }
-            }
-        }
-    ],
     "autoload": {
         "psr-4": {
             "Cbox\\Sync\\Laravel\\": "src/"
@@ -53,8 +41,6 @@
             "pestphp/pest-plugin": true
         }
     },
-    "minimum-stability": "dev",
-    "prefer-stable": true,
     "scripts": {
         "test": "pest",
         "lint": "pint --test",
