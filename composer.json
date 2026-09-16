@@ -1,0 +1,75 @@
+{
+    "name": "cboxdk/laravel-sync",
+    "description": "Offline-first sync engine for Laravel: durable storage, field-level conflicts and contextual client views",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.4",
+        "ext-pdo": "*",
+        "cboxdk/sync": "^0.1",
+        "illuminate/config": "^12.0 || ^13.0",
+        "illuminate/contracts": "^12.0 || ^13.0",
+        "illuminate/database": "^12.0 || ^13.0",
+        "illuminate/support": "^12.0 || ^13.0"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.32",
+        "orchestra/testbench": "^10.0 || ^11.0",
+        "pestphp/pest": "^3.5 || ^4.0"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../sync",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "cboxdk/sync": "0.1.0"
+                }
+            }
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Cbox\\Sync\\Laravel\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Cbox\\Sync\\Laravel\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Cbox\\Sync\\Laravel\\SyncServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "scripts": {
+        "test": "pest",
+        "lint": "pint --test",
+        "format": "pint",
+        "analyse": "phpstan analyse --no-progress --memory-limit=1G",
+        "license-check": "@php bin/check-licenses.php",
+        "sbom": "@php bin/generate-sbom.php",
+        "docs:requirements": "@php bin/generate-requirements.php",
+        "security-audit": "@composer audit --locked",
+        "qa": [
+            "@lint",
+            "@analyse",
+            "@test",
+            "@license-check",
+            "@security-audit"
+        ]
+    }
+}

@@ -1,0 +1,5 @@
+vendor/
+composer.lock.bak
+.phpunit.cache
+.phpstan.cache
+.phpunit.result.cache
