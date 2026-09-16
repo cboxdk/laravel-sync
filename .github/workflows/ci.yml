@@ -31,10 +31,10 @@ jobs:
       - name: Validate Composer metadata
         run: composer validate --strict
 
+      # --with pins the major for this leg without rewriting composer.json,
+      # which the requirements drift check below reads.
       - name: Install dependencies
-        run: |
-          composer require "illuminate/contracts:^${{ matrix.laravel }}.0" --no-update --no-interaction
-          composer update --no-interaction --prefer-dist --no-progress
+        run: composer update --no-interaction --prefer-dist --no-progress --with "orchestra/testbench:${{ matrix.laravel == '12' && '^10.0' || '^11.0' }}"
 
       - name: Check formatting
         run: vendor/bin/pint --test
