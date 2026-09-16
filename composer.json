@@ -57,17 +57,5 @@
             "@license-check",
             "@security-audit"
         ]
-    },
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../sync",
-            "options": {
-                "symlink": true,
-                "versions": {
-                    "cboxdk/sync": "0.2.0"
-                }
-            }
-        }
-    ]
+    }
 }
