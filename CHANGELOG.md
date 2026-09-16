@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 - 2026-09-16
 
 ### HTTP transport
 
@@ -18,7 +18,7 @@
 ### Fixed
 
 - `IlluminateStore` resolves Laravel's PDO handle per call instead of capturing it at construction. Laravel replaces its PDO on reconnect, and under a long-running worker this store outlives the connection that built it — the transaction would open on the new connection while every write went to the dead one, and the rollback would roll back nothing. Silent partial persistence, with no error raised.
-- Requires `cboxdk/sync` `^0.2`, which stops serving a bootstrap page on the token's own authority. Widen to `^0.3` once that is published; nothing here needs it yet.
+- Requires `cboxdk/sync` `^0.3`. One tested combination rather than a supported range nobody exercises; Composer's caret is narrow below 1.0, so a future sync minor needs this widened deliberately.
 
 
 ### Initial integration

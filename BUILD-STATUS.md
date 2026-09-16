@@ -1,6 +1,6 @@
 # Build status
 
-Unreleased Laravel integration for [cboxdk/sync](https://github.com/cboxdk/sync). No tagged release or package publication yet.
+Laravel integration for [cboxdk/sync](https://github.com/cboxdk/sync), released as 0.1.0 on 2026-09-16.
 
 Implemented:
 
