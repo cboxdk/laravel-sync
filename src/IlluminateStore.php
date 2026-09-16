@@ -22,11 +22,24 @@ class IlluminateStore extends PdoStore
 {
     public function __construct(private Connection $db, ?PdoSchema $schema = null)
     {
-        $pdo = $db->getPdo();
-        parent::__construct($pdo, $schema);
+        parent::__construct($db->getPdo(), $schema);
     }
 
-    public function connection(): ConnectionInterface
+    /**
+     * Always the connection's CURRENT handle.
+     *
+     * Laravel replaces its PDO on reconnect, and under a long-running worker
+     * this store outlives the connection that built it. Capturing the handle
+     * once would open the transaction on the framework's new connection while
+     * every write went to the dead one, and the rollback would roll back
+     * nothing - partial persistence with no error raised anywhere.
+     */
+    protected function connection(): \PDO
+    {
+        return $this->db->getPdo();
+    }
+
+    public function databaseConnection(): ConnectionInterface
     {
         return $this->db;
     }
@@ -37,7 +50,7 @@ class IlluminateStore extends PdoStore
         if ($this->schema->driver === PdoSchema::SQLITE) {
             // Laravel opens SQLite transactions deferred, which would let two
             // readers race to the same commit sequence. Take the write lock now.
-            $this->connection->exec('UPDATE sync_spaces SET commit_sequence = commit_sequence WHERE 1 = 0');
+            $this->connection()->exec('UPDATE sync_spaces SET commit_sequence = commit_sequence WHERE 1 = 0');
         }
     }
 

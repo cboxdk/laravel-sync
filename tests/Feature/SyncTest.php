@@ -49,7 +49,7 @@ it('carries an entity from create through conflict, resolution, bootstrap and de
     $view = FieldEqualsView::matching('by-project', '1', 'project', 'alpha', 'notes');
     $views = $this->syncViews();
     $context = $views->context('tenant-1', $view);
-    $page = $views->bootstrap($views->openBootstrap($context, $view, 10), $view);
+    $page = $views->bootstrap($context, $view, $views->openBootstrap($context, $view, 10));
 
     expect($page->records)->toHaveCount(1);
     expect($page->records[0]->value('title')->value())->toBe('from a');

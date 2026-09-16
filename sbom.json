@@ -1,7 +1,7 @@
 {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",
-    "serialNumber": "urn:uuid:0c246ef9-c977-5645-a75f-4678b4d6f36d",
+    "serialNumber": "urn:uuid:b09d8799-d793-55b2-a831-eb861078d850",
     "version": 1,
     "metadata": {
         "component": {
@@ -90,12 +90,12 @@
         },
         {
             "type": "library",
-            "bom-ref": "pkg:composer/cboxdk/sync@v0.1.1",
+            "bom-ref": "pkg:composer/cboxdk/sync@0.2.0",
             "group": "cboxdk",
             "name": "sync",
-            "version": "v0.1.1",
+            "version": "0.2.0",
             "scope": "required",
-            "purl": "pkg:composer/cboxdk/sync@v0.1.1",
+            "purl": "pkg:composer/cboxdk/sync@0.2.0",
             "description": "Framework-independent sync engine with explicit field conflicts for offline-first applications",
             "licenses": [
                 {
@@ -105,11 +105,7 @@
             "externalReferences": [
                 {
                     "type": "distribution",
-                    "url": "https://api.github.com/repos/cboxdk/sync/zipball/41f282e90557720b2c783073e5f453d62d2f83dd"
-                },
-                {
-                    "type": "vcs",
-                    "url": "https://github.com/cboxdk/sync.git"
+                    "url": "../sync"
                 }
             ]
         },
