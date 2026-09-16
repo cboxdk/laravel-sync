@@ -141,16 +141,16 @@
         },
         {
             "name": "cboxdk/sync",
-            "version": "v0.1.0",
+            "version": "v0.1.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/cboxdk/sync.git",
-                "reference": "1cc391d2666e79d2de6b93d1c85ff7a097eeb4ca"
+                "reference": "41f282e90557720b2c783073e5f453d62d2f83dd"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/cboxdk/sync/zipball/1cc391d2666e79d2de6b93d1c85ff7a097eeb4ca",
-                "reference": "1cc391d2666e79d2de6b93d1c85ff7a097eeb4ca",
+                "url": "https://api.github.com/repos/cboxdk/sync/zipball/41f282e90557720b2c783073e5f453d62d2f83dd",
+                "reference": "41f282e90557720b2c783073e5f453d62d2f83dd",
                 "shasum": ""
             },
             "require": {
@@ -175,9 +175,9 @@
             "description": "Framework-independent sync engine with explicit field conflicts for offline-first applications",
             "support": {
                 "issues": "https://github.com/cboxdk/sync/issues",
-                "source": "https://github.com/cboxdk/sync/tree/v0.1.0"
+                "source": "https://github.com/cboxdk/sync/tree/v0.1.1"
             },
-            "time": "2026-09-16T13:38:00+00:00"
+            "time": "2026-09-16T13:59:39+00:00"
         },
         {
             "name": "dflydev/dot-access-data",
