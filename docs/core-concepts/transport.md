@@ -93,10 +93,17 @@ keep handing back the cursor each response returns.
 {"position": 128, "context": "9f2a…"}
 ```
 
-The cursor is a position and a context **fingerprint**. The server rebuilds the
-whole context from your session and compares; the fingerprint is never used to
-look anything up, so it carries no authority — but it has to make the trip, or a
-client whose view definition changed would silently keep applying deltas onto
+Every bootstrap and delta response carries the full `context` — space, view id,
+filter version and signature, schema version, epoch — because a client needs it
+to key its own local state, and being told which view it is already reading
+discloses nothing it does not have.
+
+Requests are the other direction and carry only the **fingerprint**:
+`{"position": 128, "context": "9f2a…"}`. The server rebuilds the whole context
+from your session and compares. Accepting a context from a client would let the
+client choose its own space; the fingerprint is compared and never used to look
+anything up, so it carries no authority — but it still has to make the trip, or
+a client whose view definition changed would silently keep applying deltas onto
 stale local state.
 
 A delta change is `upsert`, `deleted` or `removed_from_scope`. Only an upsert

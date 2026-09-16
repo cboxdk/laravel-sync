@@ -33,6 +33,29 @@ class ViewMapper
         return ['position' => $cursor->position->value, 'context' => $cursor->context->fingerprint()];
     }
 
+    /**
+     * The full context, sent only OUTWARDS.
+     *
+     * A client needs it to key its own local state, and telling it which space
+     * and view it is already reading discloses nothing it does not have.
+     * Accepting one is the opposite: that would let the client choose the
+     * space, which is why requests carry only the fingerprint.
+     *
+     * @return array<string, string>
+     */
+    public static function contextToWire(CursorContext $context): array
+    {
+        return [
+            'space' => $context->space,
+            'view_id' => $context->viewId,
+            'filter_version' => $context->filterVersion,
+            'filter_signature' => $context->filterSignature,
+            'schema_version' => $context->schemaVersion,
+            'epoch' => $context->epoch,
+            'fingerprint' => $context->fingerprint(),
+        ];
+    }
+
     public static function cursorFromWire(\stdClass $body, CursorContext $context): ViewCursor
     {
         $wire = Payload::object($body, 'cursor');
@@ -60,6 +83,11 @@ class ViewMapper
         }
 
         return [
+            'context' => self::contextToWire($page->context),
+            // The token that produced this page. A client keys its
+            // out-of-order and replay guards on it, and on the first call it
+            // has no other way to learn which token the server opened.
+            'token' => $page->token->value,
             'records' => $records,
             'offset' => $page->offset,
             'next_token' => $page->nextToken?->value,
@@ -98,7 +126,9 @@ class ViewMapper
         }
 
         return [
+            'context' => self::contextToWire($page->cursor->context),
             'commits' => $commits,
+            'previous_cursor' => self::cursorToWire($page->previousCursor),
             'cursor' => self::cursorToWire($page->cursor),
             'has_more' => $page->hasMore,
         ];

@@ -4,6 +4,8 @@
 
 ### HTTP transport
 
+- Bootstrap and delta responses carry the full cursor `context` and the `token` that produced the page. A client needs both to key its own local state, and being told which view it is already reading discloses nothing it does not have. Requests still carry only the context fingerprint: accepting a context would let the client choose its own space.
+
 - Three endpoints — `push`, `bootstrap`, `delta` — shipped by the package, off by default, with the host's own guard in `sync.api.middleware`. See `docs/core-concepts/transport.md`.
 - `Contracts\SyncableType` is a host's per-entity-type declaration: space resolution from the authenticated principal, readable and writable field whitelists, the view, and read/write authorization. Registered through a config map in a registry where an unknown type throws, never no-ops.
 - **`replica` and `mutation_id` are namespaced under the authenticated principal.** Both are chosen by the client and honoured by the engine without it knowing who sent them, so unbound, anyone in a tenant who names another device's replica claims its sequence numbers — that device's next push then fails terminally and its queued mutations are unrecoverable. Bound on the principal's stable id, never its authorization state, so a permission change does not orphan an unflushed queue.
