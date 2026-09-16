@@ -39,9 +39,9 @@ Start with the [quickstart](docs/quickstart.md). See
 Requires PHP `^8.4` and Laravel 12 or 13. [Requirements](docs/requirements.md)
 are generated from Composer metadata.
 
-This package ships no HTTP endpoints and no wire format: your application owns
-routing, authentication and how a space is resolved from a request. It also
-ships no UI. A space accepts one concurrent writer by design — it is the
+The HTTP endpoints ship with the package but are off by default: your
+application owns authentication and decides how a space is resolved from a
+request. It ships no UI. A space accepts one concurrent writer by design — it is the
 ordering boundary — so pick spaces that match your tenancy.
 
 MIT, copyright Cbox. See [LICENSE](LICENSE) and [BUILD-STATUS.md](BUILD-STATUS.md).

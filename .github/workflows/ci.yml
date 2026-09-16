@@ -98,7 +98,7 @@ jobs:
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
-      - name: Run tests against ${{ matrix.database }}
+      - name: Run tests against ${{ matrix.database }}, HTTP endpoints included
         run: vendor/bin/pest
         env:
           SYNC_DRIVER: ${{ matrix.database == 'postgres' && 'pgsql' || 'mysql' }}

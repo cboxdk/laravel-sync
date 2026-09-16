@@ -60,6 +60,32 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | HTTP API
+    |--------------------------------------------------------------------------
+    |
+    | Off by default. The endpoints carry no authentication of their own: put
+    | your own guard in `middleware`, and declare every syncable type in
+    | `types`. A type that is not listed is refused, because a type nobody
+    | declared is a type nobody decided the authorization rules for.
+    |
+    */
+
+    'api' => [
+        'enabled' => env('SYNC_API_ENABLED', false),
+        'prefix' => env('SYNC_API_PREFIX', 'sync'),
+        'middleware' => ['api'],
+
+        /** entity type => class-string<Cbox\Sync\Laravel\Api\Contracts\SyncableType> */
+        'types' => [],
+
+        'max_body_bytes' => 256 * 1024,
+        'max_operations' => 64,
+        'max_page_size' => 500,
+        'max_commits' => 500,
+    ],
+
     'retention' => [
         'keep_commits' => (int) env('SYNC_KEEP_COMMITS', 10_000),
     ],

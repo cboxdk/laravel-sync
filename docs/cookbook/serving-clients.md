@@ -6,67 +6,101 @@ description: "Write the push, bootstrap and delta endpoints your application own
 
 # Serving clients
 
-This package ships no routes and no wire format. That is deliberate: how a
-request becomes a mutation, who may send it, and which space it belongs to are
-application decisions that a library cannot make safely on your behalf.
+The endpoints ship with the package now; see [transport](../core-concepts/transport.md)
+for the wire format. What you write is the declaration of what may be reached.
 
-A minimal set of endpoints looks like this.
-
-## Push
+## Declare a type
 
 ```php
-public function push(PushRequest $request, Engine $engine): JsonResponse
+use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
+
+class TaskType implements SyncableType
 {
-    $space = $request->user()->currentTeam->getKey();   // your tenancy, your rule
+    public function entityType(): string
+    {
+        return 'tasks';
+    }
 
-    $result = $engine->process(new Mutation(
-        id: $request->string('mutation_id')->toString(),
-        entity: new EntityKey($space, $request->string('type'), $request->string('id')),
-        replica: new Replica($request->string('device')),
-        sequence: new MutationSequence($request->integer('sequence')),
-        kind: MutationKind::from($request->string('kind')),
-        baseVersion: new RecordVersion($request->integer('base_version')),
-        operations: $request->operations(),
-    ), new AdapterContext(actorId: (string) $request->user()->getKey()));
+    public function space(SyncPrincipal $principal, ?string $scope): string
+    {
+        // A selector, not a space. Map it through the caller's memberships.
+        return $this->teams->forUser($principal->id)->assert($scope)->syncSpace();
+    }
 
-    return response()->json(['status' => $result->status->value, 'version' => $result->recordVersion->value]);
+    public function view(SyncPrincipal $principal, ?string $scope): ViewDefinition
+    {
+        return FieldEqualsView::matching('open-tasks', '1', 'status', 'open', 'tasks');
+    }
+
+    public function readableFields(SyncPrincipal $principal): array
+    {
+        return ['title', 'status', 'due_at'];
+    }
+
+    public function writableFields(SyncPrincipal $principal): array
+    {
+        return ['title', 'status'];
+    }
+
+    public function mayRead(SyncPrincipal $principal, ?string $scope): bool
+    {
+        return $principal->id !== null;
+    }
+
+    public function mayWrite(SyncPrincipal $principal, ?EntityRecord $record, MutationKind $kind): bool
+    {
+        return true;
+    }
 }
 ```
 
-The space must come from the authenticated session, never from the request body.
-Nothing in the engine checks who is allowed to write where.
-
-`AdapterContext` records who made the change as trusted provenance, separate from
-the replica the client claims.
-
-## Bootstrap and delta
-
 ```php
-$views = app(ViewSyncService::class);
-$view = new MyView($request->user());
-
-$token = $request->filled('token')
-    ? new BootstrapToken($request->string('token'))
-    : $views->openBootstrap($views->context($space, $view), $view, 100);
-
-$page = $views->bootstrap($token, $view);
+// config/sync.php
+'api' => [
+    'enabled' => true,
+    'middleware' => ['api', 'auth:sanctum'],
+    'types' => ['tasks' => TaskType::class],
+],
 ```
 
-Tokens are stateless by default, so return `$page->nextToken` to the client and
-let any worker serve the next page. When `$page->cursor` arrives the bootstrap is
-done and the client moves to deltas.
+A type that is not listed is refused with 404. A type nobody declared is a type
+nobody decided the authorization rules for.
 
-## Handling a reset
+## Two things worth saying twice
 
-`ResetRequired` means the client's local state for that view can no longer be
-trusted — the view definition changed, the epoch rotated, or the cursor fell
-below the retention horizon. Map it to a status your client understands and have
-it bootstrap that view again.
+**`readableFields()` is the only column filter.** A view decides which *rows* a
+client sees and has no opinion about fields. A record reaching the wire carries
+every field, and each field's origin names the actor who wrote it, so the
+whitelist is what stops both the values and the authorship from escaping.
+
+**`view()` should reflect the caller's actual access.** A cursor is invalidated
+only when its context fingerprint changes, and that fingerprint comes from the
+view. A view whose signature ignores who is asking keeps serving deltas to
+someone whose access was revoked.
+
+## Mounting the endpoints yourself
+
+Leave `sync.api.enabled` false and use the trait in your own controller, so
+routing, naming and middleware stay yours:
 
 ```php
-try {
-    return response()->json($views->delta($cursor, $view));
-} catch (ResetRequired $reset) {
-    return response()->json(['reset' => $reset->reason->value], 409);
+class MySyncController
+{
+    use HandlesSyncRequests;
+
+    public function __construct(private readonly SyncEndpoints $sync) {}
+
+    public function push(Request $request): JsonResponse
+    {
+        return $this->syncPush($request);
+    }
+
+    protected function syncEndpoints(): SyncEndpoints
+    {
+        return $this->sync;
+    }
 }
 ```
+
+Your routes must still run `ResolveSyncPrincipal`, or every request is refused
+with 401.
