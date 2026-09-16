@@ -11,6 +11,8 @@ jobs:
   quality:
     name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }}
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cboxdk/php-baseimages/php-cli:${{ matrix.php || '8.4' }}-bookworm-dev
     strategy:
       fail-fast: false
       matrix:
@@ -20,13 +22,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ matrix.php }}
-          coverage: none
-          tools: composer:v2
 
       - name: Validate Composer metadata
         run: composer validate --strict
@@ -59,6 +54,8 @@ jobs:
   databases:
     name: ${{ matrix.database }}
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cboxdk/php-baseimages/php-cli:${{ matrix.php || '8.4' }}-bookworm-dev
     strategy:
       fail-fast: false
       matrix:
@@ -87,14 +84,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.4'
-          coverage: none
-          extensions: pdo_pgsql, pdo_mysql
-          tools: composer:v2
-
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
@@ -103,7 +92,7 @@ jobs:
         env:
           SYNC_DRIVER: ${{ matrix.database == 'postgres' && 'pgsql' || 'mysql' }}
           SYNC_DATABASE: sync
-          SYNC_HOST: 127.0.0.1
+          SYNC_HOST: ${{ matrix.database == 'postgres' && 'postgres' || 'mysql' }}
           SYNC_PORT: ${{ matrix.database == 'postgres' && '5432' || '3306' }}
           SYNC_USERNAME: ${{ matrix.database == 'postgres' && 'sync' || 'root' }}
           SYNC_PASSWORD: secret
