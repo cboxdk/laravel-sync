@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Responses are encoded with `JSON_PRESERVE_ZERO_FRACTION`. A field value is canonical JSON text and equality is exact, so a float like `1.0` encoded as `1` came back as an integer — and a client that wrote back what it read produced a different canonical value, a spurious version bump, and a conflict against anyone still holding the float. Found by an end-to-end test carrying a document through the wire and writing it back verbatim.
+
 ## 0.1.0 - 2026-09-16
 
 ### HTTP transport
