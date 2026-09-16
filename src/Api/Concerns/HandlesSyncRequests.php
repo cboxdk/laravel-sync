@@ -83,16 +83,19 @@ trait HandlesSyncRequests
     private function syncResponse(array $body, int $status = 200): JsonResponse
     {
         // Bootstrap pages are tenant data; a shared proxy must not keep them.
-        $response = new JsonResponse($body, $status, ['Cache-Control' => 'no-store']);
+        // Encoded here, and handed over already encoded.
+        //
+        // PRESERVE_ZERO_FRACTION is not cosmetic: a field value is canonical
+        // JSON text and equality is exact, so a float 1.0 written as 1 comes
+        // back an integer, and a client that writes back what it read produces
+        // a different canonical value - a version bump out of nowhere and a
+        // conflict against every device still holding the float.
+        //
+        // setEncodingOptions() cannot do this. It decodes the ALREADY encoded
+        // payload and re-encodes it, by which point the fraction is gone.
+        $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
-        // PRESERVE_ZERO_FRACTION is not cosmetic. A field value is canonical
-        // JSON text and equality is exact, so 1.0 encoded as 1 comes back as an
-        // integer, and a client that writes what it read produces a different
-        // canonical value - a version bump, and a conflict against anyone who
-        // still holds the float.
-        $response->setEncodingOptions(JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-        return $response;
+        return new JsonResponse($json, $status, ['Cache-Control' => 'no-store'], json: true);
     }
 
     private function syncRetriable(string $message): JsonResponse
