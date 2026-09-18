@@ -15,17 +15,22 @@ return new class extends Migration
 {
     public function up(): void
     {
-        $connection = DB::connection(config('sync.connection'));
-        foreach ((new PdoSchema($connection->getDriverName()))->statements() as $statement) {
-            $connection->statement($statement);
-        }
+        $connection = DB::connection($this->syncConnection());
+        (new PdoSchema($connection->getDriverName()))->install($connection->getPdo());
     }
 
     public function down(): void
     {
-        $connection = DB::connection(config('sync.connection'));
+        $connection = DB::connection($this->syncConnection());
         foreach (['sync_commits', 'sync_conflict_groups', 'sync_fields', 'sync_records', 'sync_receipts', 'sync_streams', 'sync_spaces'] as $table) {
             $connection->statement('DROP TABLE IF EXISTS '.$table);
         }
+    }
+
+    private function syncConnection(): ?string
+    {
+        $name = config('sync.connection');
+
+        return is_string($name) && $name !== '' ? $name : null;
     }
 };
