@@ -14,6 +14,7 @@ use Cbox\Sync\Laravel\Api\Http\Middleware\RequireJsonBody;
 use Cbox\Sync\Laravel\Api\Http\Middleware\ResolveSyncPrincipal;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 
@@ -89,13 +90,30 @@ class ApiServiceProvider extends ServiceProvider
             return [];
         }
         $map = [];
-        foreach ($configured as $entityType => $class) {
-            if (is_string($entityType) && $entityType !== '' && is_string($class) && class_exists($class)) {
+        foreach ($configured as $key => $class) {
+            if (! is_string($class) || ! class_exists($class)) {
+                continue;
+            }
+            // A bare model class knows its own entity type, so listing it is
+            // the whole registration: ['types' => [Task::class]].
+            $entityType = is_string($key) && $key !== '' ? $key : self::entityTypeOf($class);
+            if ($entityType !== null) {
                 $map[$entityType] = $class;
             }
         }
 
         return $map;
+    }
+
+    /** @param class-string $class */
+    private static function entityTypeOf(string $class): ?string
+    {
+        if (! is_subclass_of($class, Model::class) || ! method_exists($class, 'syncEntityType')) {
+            return null;
+        }
+        $type = (new $class)->syncEntityType();
+
+        return is_string($type) && $type !== '' ? $type : null;
     }
 
     private function bytes(Application $app): int

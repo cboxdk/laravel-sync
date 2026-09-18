@@ -7,7 +7,10 @@ namespace Cbox\Sync\Laravel\Api;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Exceptions\UnknownSyncableType;
+use Illuminate\Contracts\Auth\Access\Gate;
+use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Contracts\Container\Container;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * Resolves a host's syncable types from a config map, lazily and once each.
@@ -51,6 +54,15 @@ class TypeRegistry implements SyncableTypes
             throw UnknownSyncableType::forType($entityType);
         }
         $instance = $this->container->make($class);
+
+        // A model registered directly is served through the adapter that reads
+        // it and asks the application's own policy, so a host declares sync on
+        // the model and nowhere else.
+        if ($instance instanceof Model && method_exists($instance, 'syncEntityType')) {
+            /** @var class-string<Model> $class */
+            $instance = new ModelSyncableType($class, $this->container->make(Gate::class), $this->container->make(AuthFactory::class));
+        }
+
         if (! $instance instanceof SyncableType) {
             throw UnknownSyncableType::misconfigured($entityType, $class);
         }
