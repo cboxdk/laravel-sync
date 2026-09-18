@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Cbox\Sync\Laravel\Api;
 
+use Cbox\Sync\Contracts\ConflictResolver;
+use Cbox\Sync\Contracts\EntityValidator;
+use Cbox\Sync\Contracts\IdGenerator;
 use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\AdapterContext;
 use Cbox\Sync\Engine;
@@ -26,8 +29,10 @@ use Illuminate\Http\Request;
 class SyncService implements SyncEndpoints
 {
     public function __construct(
-        private readonly Engine $engine,
         private readonly Store $store,
+        private readonly ConflictResolver $resolver,
+        private readonly IdGenerator $ids,
+        private readonly EntityValidator $validator,
         private readonly ViewSyncService $views,
         private readonly SyncableTypes $types,
         private readonly Repository $config,
@@ -45,14 +50,44 @@ class SyncService implements SyncEndpoints
             $this->setting('max_operations', 64),
         );
 
+        // A mutation this server has already processed is answered from its
+        // receipt, whatever authorization says now.
+        //
+        // Otherwise a retry after a lost response can be refused by a policy
+        // that reads the record - deleting a row and then being denied because
+        // the row is deleted. The write already happened; denying the ANSWER
+        // does not undo it, it only strands the client, which abandons the
+        // mutation without advancing its acknowledgement and then has every
+        // later write rejected for reusing a sequence. One lost response would
+        // wedge the device permanently.
+        $alreadyProcessed = $this->store->receipt($mutation->id) !== null;
+
         // Before the engine, always. A mutation id that reaches it is
         // acknowledged forever, so a refusal afterwards would leave the client
         // unable to retry that id ever again.
-        if (! $type->mayWrite($principal, $this->store->record($mutation->entity), $mutation->kind)) {
+        if (! $alreadyProcessed && ! $type->mayWrite($principal, $this->store->record($mutation->entity), $mutation->kind)) {
             throw SyncRequestRejected::forbidden();
         }
 
-        $result = $this->engine->process($mutation, new AdapterContext($principal->id, $principal->integrationId));
+        // The engine is built per request so its validator can re-check this
+        // caller's authorization inside the transaction, against the same
+        // locked record the write merges into.
+        $engine = new Engine(
+            $this->store,
+            $this->resolver,
+            $this->ids,
+            new AuthorizesInsideTransaction($this->validator, $type, $principal),
+        );
+        $result = $engine->process($mutation, new AdapterContext($principal->id, $principal->integrationId));
+
+        // Whether the caller may see this row at all, judged on the canonical
+        // record after the write. A field whitelist bounds columns; only the
+        // view bounds rows.
+        $canonical = $this->store->record($mutation->entity);
+        $rowIsReadable = $canonical !== null
+            && ! $canonical->deleted
+            && $type->mayRead($principal, Payload::optionalString($body, 'scope'))
+            && $type->view($principal, Payload::optionalString($body, 'scope'))->includes($canonical);
 
         $groups = [];
         foreach ($result->conflictGroupIds as $id) {
@@ -62,7 +97,7 @@ class SyncService implements SyncEndpoints
             }
         }
 
-        return ResultMapper::toWire($result, $type->readableFields($principal), $groups);
+        return ResultMapper::toWire($result, $type->readableFields($principal), $groups, $rowIsReadable);
     }
 
     public function bootstrap(Request $request, SyncPrincipal $principal): array

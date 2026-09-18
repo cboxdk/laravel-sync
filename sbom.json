@@ -1,7 +1,7 @@
 {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",
-    "serialNumber": "urn:uuid:3cb9b89e-136d-51e2-bc80-ff085f8383fa",
+    "serialNumber": "urn:uuid:ed16a6ec-edd9-5d12-89fb-d9ddd3457ead",
     "version": 1,
     "metadata": {
         "component": {
@@ -90,12 +90,12 @@
         },
         {
             "type": "library",
-            "bom-ref": "pkg:composer/cboxdk/sync@v0.3.0",
+            "bom-ref": "pkg:composer/cboxdk/sync@v0.4.0",
             "group": "cboxdk",
             "name": "sync",
-            "version": "v0.3.0",
+            "version": "v0.4.0",
             "scope": "required",
-            "purl": "pkg:composer/cboxdk/sync@v0.3.0",
+            "purl": "pkg:composer/cboxdk/sync@v0.4.0",
             "description": "Framework-independent sync engine with explicit field conflicts for offline-first applications",
             "licenses": [
                 {
@@ -105,7 +105,7 @@
             "externalReferences": [
                 {
                     "type": "distribution",
-                    "url": "https://api.github.com/repos/cboxdk/sync/zipball/950cb6ff16c7796038e762447eb7aeaf9f1b9c02"
+                    "url": "https://api.github.com/repos/cboxdk/sync/zipball/9c04aa8422edef914d465e976733707145fcce7b"
                 },
                 {
                     "type": "vcs",
@@ -390,12 +390,12 @@
         },
         {
             "type": "library",
-            "bom-ref": "pkg:composer/filp/whoops@2.18.4",
+            "bom-ref": "pkg:composer/filp/whoops@2.18.5",
             "group": "filp",
             "name": "whoops",
-            "version": "2.18.4",
+            "version": "2.18.5",
             "scope": "optional",
-            "purl": "pkg:composer/filp/whoops@2.18.4",
+            "purl": "pkg:composer/filp/whoops@2.18.5",
             "description": "php error handling for cool kids",
             "licenses": [
                 {
@@ -405,7 +405,7 @@
             "externalReferences": [
                 {
                     "type": "distribution",
-                    "url": "https://api.github.com/repos/filp/whoops/zipball/d2102955e48b9fd9ab24280a7ad12ed552752c4d"
+                    "url": "https://api.github.com/repos/filp/whoops/zipball/baec851ad6ae00db8bd0fdd30d208afc1b71c56e"
                 },
                 {
                     "type": "vcs",

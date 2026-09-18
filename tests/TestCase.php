@@ -7,7 +7,10 @@ namespace Cbox\Sync\Laravel\Tests;
 use Cbox\Sync\Laravel\Api\Contracts\SyncPrincipals;
 use Cbox\Sync\Laravel\SyncServiceProvider;
 use Cbox\Sync\Laravel\Testing\InteractsWithSync;
+use Cbox\Sync\Laravel\Tests\Fixtures\BlindWriteType;
 use Cbox\Sync\Laravel\Tests\Fixtures\HeaderPrincipals;
+use Cbox\Sync\Laravel\Tests\Fixtures\NoDeletedWritesType;
+use Cbox\Sync\Laravel\Tests\Fixtures\RacingType;
 use Cbox\Sync\Laravel\Tests\Fixtures\TaskType;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 
@@ -34,7 +37,7 @@ class TestCase extends BaseTestCase
         ]);
         $app['config']->set('app.key', 'base64:'.base64_encode(random_bytes(32)));
         $app['config']->set('sync.api.enabled', true);
-        $app['config']->set('sync.api.types', ['tasks' => TaskType::class]);
+        $app['config']->set('sync.api.types', ['tasks' => TaskType::class, 'tickets' => BlindWriteType::class, 'files' => NoDeletedWritesType::class, 'racing' => RacingType::class]);
         $app['config']->set('sync.api.middleware', []);
         $app->bind(
             SyncPrincipals::class,

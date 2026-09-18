@@ -1,6 +1,6 @@
 # Build status
 
-Laravel integration for [cboxdk/sync](https://github.com/cboxdk/sync), released as 0.1.1 on 2026-09-16.
+Laravel integration for [cboxdk/sync](https://github.com/cboxdk/sync), released as 0.2.0 on 2026-09-18.
 
 Implemented:
 
@@ -13,7 +13,7 @@ Implemented:
 
 Verification on 2026-09-16:
 
-- Pest: 20 Testbench tests, including end-to-end HTTP covering create, a preserved conflict, resolve, bootstrap paging, delta, replay, gap recovery, authorization refusals, and that no provenance reaches the wire. Green against SQLite, MySQL 8.4 and PostgreSQL 17.
+- Pest: 26 Testbench tests, including end-to-end HTTP covering create, a preserved conflict, resolve, bootstrap paging, delta, replay, gap recovery, authorization refusals, and that no provenance reaches the wire. Green against SQLite, MySQL 8.4 and PostgreSQL 17.
 - Pint, PHPStan max with larastan, 137 dependency licenses, locked dependency audit.
 - SBOM and generated requirements reproduce without drift.
 

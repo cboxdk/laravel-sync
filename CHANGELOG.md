@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0 - 2026-09-18
+
+### Security
+
+- **A conflict response could disclose a row the caller may not read.** The field whitelist bounds columns; only the view bounds rows. A policy allowing a blind write to a row outside the caller's view handed that row's canonical value back in `conflicts[].current`. Disclosure now requires both permissions.
+- **Write authorization is re-checked inside the storage transaction.** The gate in front of the engine reads the record without the space lock held, so anything it decides from record state can be stale by the time the write lands — a record can change owner in between and the write still merges cleanly. The outer gate stays, because it answers a clean 403 without spending a mutation identity; the in-transaction check is the authority.
+
+### Fixed
+
+- **A mutation the server has already processed is answered from its receipt, whatever authorization says now.** Otherwise a retry after a lost response could be refused by a policy that reads the record — deleting a row and then being denied because the row is deleted. The write already happened; refusing the answer only stranded the client, which abandoned the mutation without advancing its acknowledgement and then had every later write rejected for reusing a sequence. One lost response wedged the device permanently.
+- A cursor whose context no longer matches is answered with `reset_required` and a reason, not `invalid_cursor`. A rotated epoch is the common case, and a client told "invalid cursor" has nothing to act on and presents the same dead cursor forever.
+
+### Changed
+
+- Requires `cboxdk/sync` `^0.4`.
+- `SyncService` is constructed from the store, resolver, id generator and validator rather than a prebuilt engine, so it can decorate the validator per request.
+
 ## 0.1.1 - 2026-09-16
 
 ### Fixed

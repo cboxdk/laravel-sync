@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+use Cbox\Sync\Views\ViewSyncService;
 use Illuminate\Testing\TestResponse;
 
 /** The read half: paging a bootstrap, following deltas, and resolving a conflict. */
@@ -76,8 +77,12 @@ it('refuses a cursor built for a different context', function () {
     seedTask($this, 't1', 1);
     $cursor = read($this, 'bootstrap', [])->assertOk()->json('cursor');
 
+    // A forged or stale fingerprint is answered the same way a rotated epoch is:
+    // this view's local state can no longer be trusted, so rebuild it.
     read($this, 'delta', ['cursor' => ['position' => $cursor['position'], 'context' => str_repeat('0', 64)]])
-        ->assertStatus(409)->assertJsonPath('error', 'invalid_cursor');
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'reset_required')
+        ->assertJsonPath('reason', 'context_changed');
 });
 
 it('resolves a preserved conflict using what the push response returned', function () {
@@ -106,4 +111,19 @@ it('resolves a preserved conflict using what the push response returned', functi
 
     $resolved->assertOk()->assertJsonPath('status', 'applied');
     expect(read($this, 'bootstrap', [])->json('records.0.fields.title.value'))->toBe('agreed');
+});
+
+it('reports a rotated epoch as a reset the client can act on', function () {
+    seedTask($this, 't1', 1);
+    $cursor = read($this, 'bootstrap', [])->assertOk()->json('cursor');
+
+    config(['sync.epoch' => 'epoch-2']);
+    app()->forgetInstance(ViewSyncService::class);
+
+    // Not "invalid cursor": a client cannot act on that, and would present the
+    // same dead cursor forever.
+    read($this, 'delta', ['cursor' => $cursor])
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'reset_required')
+        ->assertJsonPath('reason', 'context_changed');
 });

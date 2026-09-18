@@ -21,9 +21,10 @@ class ResultMapper
     /**
      * @param  list<string>  $readableFields
      * @param  array<string, ConflictGroup>  $groups  the touched groups, by id
+     * @param  bool  $rowIsReadable  whether the caller's view contains this record
      * @return array<string, mixed>
      */
-    public static function toWire(MutationResult $result, array $readableFields, array $groups = []): array
+    public static function toWire(MutationResult $result, array $readableFields, array $groups = [], bool $rowIsReadable = true): array
     {
         // A gap produces no receipt, no commit and no acknowledgement; the
         // engine returns before any of it. Emitting the zero-valued version and
@@ -71,9 +72,12 @@ class ResultMapper
                 'effective_base' => $conflict->effectiveBase->value,
             ];
             // `proposed` is the client's own value coming back; echoing it is
-            // pure attack surface. `current` is the server's, which a client
-            // may be allowed to write without being allowed to read.
-            if (in_array($field, $readableFields, true)) {
+            // pure attack surface. `current` is the server's, and disclosing it
+            // needs BOTH permissions: the column whitelist AND the row itself
+            // being inside the caller's view. A policy that allows a blind
+            // write to a row the caller cannot read would otherwise hand back
+            // that row's contents through a conflict.
+            if ($rowIsReadable && in_array($field, $readableFields, true)) {
                 $entry['current'] = FieldValueCodec::toWire($conflict->current);
             } else {
                 $entry['current_hidden'] = true;

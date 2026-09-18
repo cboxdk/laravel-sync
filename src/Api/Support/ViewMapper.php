@@ -9,6 +9,8 @@ use Cbox\Sync\ValueObjects\CommitSequence;
 use Cbox\Sync\Views\BootstrapPage;
 use Cbox\Sync\Views\CursorContext;
 use Cbox\Sync\Views\DeltaPage;
+use Cbox\Sync\Views\ResetReason;
+use Cbox\Sync\Views\ResetRequired;
 use Cbox\Sync\Views\ViewChangeKind;
 use Cbox\Sync\Views\ViewCursor;
 
@@ -61,7 +63,11 @@ class ViewMapper
         $wire = Payload::object($body, 'cursor');
         $fingerprint = Payload::string($wire, 'context');
         if (! hash_equals($context->fingerprint(), $fingerprint)) {
-            throw SyncRequestRejected::badCursor();
+            // The context changed underneath this cursor - a rotated epoch, a
+            // new schema version, an altered view. That is a reset, not a
+            // malformed request: a client told "invalid cursor" has nothing to
+            // act on and will present the same dead cursor forever.
+            throw new ResetRequired(ResetReason::ContextChanged);
         }
         $position = Payload::int($wire, 'position');
         if ($position < 0) {
