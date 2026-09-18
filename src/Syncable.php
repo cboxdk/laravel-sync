@@ -36,6 +36,40 @@ trait Syncable
     /** @var array<class-string, list<string>> One schema read per model class, not per call. */
     private static array $syncColumnCache = [];
 
+    /** Per using-class, which is what a trait's static property gives us and what we want here. */
+    private static bool $syncSuspended = false;
+
+    /**
+     * Run something without it counting as a change to sync.
+     *
+     * Sync writes the canonical value back to this table, and that write must
+     * not be read as a new edit - it is the answer to one. Without this the
+     * model observer turns every applied mutation into another mutation, for
+     * ever.
+     *
+     * @template TReturn
+     *
+     * @param  \Closure(): TReturn  $callback
+     * @return TReturn
+     */
+    public static function withoutSyncing(\Closure $callback): mixed
+    {
+        $previous = self::$syncSuspended;
+        self::$syncSuspended = true;
+
+        try {
+            return $callback();
+        } finally {
+            self::$syncSuspended = $previous;
+        }
+    }
+
+    /** Whether a write happening right now is sync's own. */
+    public static function syncSuspended(): bool
+    {
+        return self::$syncSuspended;
+    }
+
     /** The entity type written into every synced key. Never change it once rows exist. */
     public function syncEntityType(): string
     {

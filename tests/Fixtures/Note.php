@@ -22,6 +22,12 @@ class Note extends Model
 
     protected $table = 'notes';
 
+    // A device creates records while offline, so the id has to be one it can
+    // mint itself rather than one the database hands out.
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+
     public $timestamps = true;
 
     protected $fillable = ['title', 'body', 'status'];

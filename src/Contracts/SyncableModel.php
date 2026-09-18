@@ -23,4 +23,14 @@ interface SyncableModel
     public function syncReadOnly(): array;
 
     public function syncScopeColumn(): ?string;
+
+    /**
+     * @template TReturn
+     *
+     * @param  \Closure(): TReturn  $callback
+     * @return TReturn
+     */
+    public static function withoutSyncing(\Closure $callback): mixed;
+
+    public static function syncSuspended(): bool;
 }

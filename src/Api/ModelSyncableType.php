@@ -6,6 +6,7 @@ namespace Cbox\Sync\Laravel\Api;
 
 use Cbox\Sync\Data\EntityRecord;
 use Cbox\Sync\Enums\MutationKind;
+use Cbox\Sync\Laravel\Api\Contracts\PersistsRecords;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
 use Cbox\Sync\Laravel\Api\Exceptions\SyncRequestRejected;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
@@ -31,7 +32,7 @@ use Illuminate\Database\Eloquent\Model;
  * and the one the engine is about to merge into is the one the decision has to
  * be made against.
  */
-class ModelSyncableType implements SyncableType
+class ModelSyncableType implements PersistsRecords, SyncableType
 {
     /** @var Model&SyncableModel */
     private Model $prototype;
@@ -50,6 +51,15 @@ class ModelSyncableType implements SyncableType
                 Syncable::class,
             ));
         }
+        if ($instance->getIncrementing()) {
+            throw new \LogicException(sprintf(
+                '%s uses an auto-incrementing key, which cannot sync: a device that is offline has to be able to '
+                .'create a record before the server has seen it, so the id must be one the client can mint. '
+                .'Set $incrementing = false and $keyType = "string", and key the model with a UUID or ULID.',
+                $this->model,
+            ));
+        }
+
         /** @var Model&SyncableModel $instance */
         $this->prototype = $instance;
     }
@@ -115,6 +125,64 @@ class ModelSyncableType implements SyncableType
         }
 
         return $gate->allows($kind === MutationKind::Delete ? 'delete' : 'update', $this->hydrate($record));
+    }
+
+    /**
+     * Write what the engine settled on into the application's own table.
+     *
+     * Only the synced fields are touched. Anything else on the row belongs to
+     * the application - a computed column, a relation's foreign key, a counter
+     * - and overwriting it with nothing is how a sync layer eats data it was
+     * never given.
+     */
+    public function persist(EntityRecord $record): void
+    {
+        $attributes = [];
+        foreach ($this->prototype->syncFields() as $field) {
+            $value = $record->value($field);
+            if ($value->exists) {
+                $attributes[$field] = $value->value();
+            }
+        }
+
+        // The tenant is not a synced field - a client must never be able to set
+        // it - but a new row cannot exist without it, and it is already encoded
+        // in the space the engine wrote under.
+        $column = $this->prototype->syncScopeColumn();
+        if ($column !== null) {
+            $attributes[$column] = $this->scopeOf($record->entity->space);
+        }
+
+        /** @var class-string<Model&SyncableModel> $model */
+        $model = $this->model;
+        $model::withoutSyncing(function () use ($model, $record, $attributes): void {
+            $row = $model::query()->whereKey($record->entity->id)->first() ?? new $model;
+
+            // forceFill, not fill: the key and the tenant are deliberately not
+            // fillable, and mass assignment would drop them silently. It is not
+            // the boundary that matters here either - writableFields already
+            // decided what a client may set, before the engine ever saw it.
+            $row->forceFill($attributes);
+            $row->setAttribute($row->getKeyName(), $record->entity->id);
+            $row->save();
+        });
+    }
+
+    /** The tenant back out of the space this type built in space(). */
+    private function scopeOf(string $space): string
+    {
+        $prefix = $this->entityType().':';
+
+        return str_starts_with($space, $prefix) ? substr($space, strlen($prefix)) : $space;
+    }
+
+    public function forget(EntityRecord $record): void
+    {
+        /** @var class-string<Model&SyncableModel> $model */
+        $model = $this->model;
+        $model::withoutSyncing(function () use ($model, $record): void {
+            $model::query()->whereKey($record->entity->id)->delete();
+        });
     }
 
     /**

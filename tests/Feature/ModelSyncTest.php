@@ -5,9 +5,13 @@ declare(strict_types=1);
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Contracts\SyncPrincipals;
 use Cbox\Sync\Laravel\Api\GuardPrincipals;
+use Cbox\Sync\Laravel\Api\ModelSyncableType;
+use Cbox\Sync\Laravel\Syncable;
 use Cbox\Sync\Laravel\Tests\Fixtures\Member;
 use Cbox\Sync\Laravel\Tests\Fixtures\Note;
 use Cbox\Sync\Laravel\Tests\Fixtures\NotePolicy;
+use Illuminate\Contracts\Auth\Factory;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Schema;
@@ -99,4 +103,59 @@ it('refuses a read for a principal the policy will not show anything to', functi
 
     $this->postJson('/sync/bootstrap', ['type' => 'notes', 'scope' => 'outsiders'])
         ->assertForbidden();
+});
+
+/** Sync owns ordering and conflicts; the table is where the rest of the app reads. */
+it('writes the settled value into the application table', function () {
+    $this->actingAs(member('erin', 'owners'));
+
+    pushNote()->assertOk();
+
+    $note = Note::find('n1');
+    expect($note)->not->toBeNull();
+    expect($note->title)->toBe('First note');
+    expect($note->status)->toBe('open');
+    expect($note->team_id)->toBe('owners');
+});
+
+it('removes the row when the record becomes a tombstone', function () {
+    $this->actingAs(member('frank', 'owners'));
+    pushNote()->assertOk();
+
+    $this->postJson('/sync/push', [
+        'type' => 'notes', 'scope' => 'owners', 'mutation_id' => 'm2', 'id' => 'n1',
+        'replica' => 'device', 'sequence' => 2, 'kind' => 'delete', 'base_version' => 1,
+    ])->assertOk();
+
+    expect(Note::find('n1'))->toBeNull();
+});
+
+/** A row the engine refused must not be in the table either. */
+it('leaves the table untouched when the mutation is refused', function () {
+    $this->actingAs(member('gina', 'readers'));
+
+    pushNote()->assertForbidden();
+
+    expect(Note::find('n1'))->toBeNull();
+});
+
+/**
+ * Offline creation is the whole point, and a device cannot create a row whose
+ * id the database has not handed out yet. Saying so beats a NOT NULL error.
+ */
+it('refuses a model whose key the database hands out', function () {
+    $model = new class extends Model
+    {
+        use Syncable;
+
+        protected $table = 'notes';
+
+        protected $fillable = ['title'];
+    };
+
+    expect(fn () => new ModelSyncableType(
+        $model::class,
+        app(Illuminate\Contracts\Auth\Access\Gate::class),
+        app(Factory::class),
+    ))->toThrow(LogicException::class, 'auto-incrementing key');
 });

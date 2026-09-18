@@ -9,7 +9,9 @@ use Cbox\Sync\Contracts\EntityValidator;
 use Cbox\Sync\Contracts\IdGenerator;
 use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\AdapterContext;
+use Cbox\Sync\Data\MutationResult;
 use Cbox\Sync\Engine;
+use Cbox\Sync\Laravel\Api\Contracts\PersistsRecords;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Contracts\SyncEndpoints;
@@ -21,6 +23,7 @@ use Cbox\Sync\Laravel\Api\Support\Payload;
 use Cbox\Sync\Laravel\Api\Support\ResultMapper;
 use Cbox\Sync\Laravel\Api\Support\ViewMapper;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
+use Cbox\Sync\Laravel\IlluminateStore;
 use Cbox\Sync\Views\BootstrapToken;
 use Cbox\Sync\Views\ViewSyncService;
 use Illuminate\Contracts\Config\Repository;
@@ -78,7 +81,26 @@ class SyncService implements SyncEndpoints
             $this->ids,
             new AuthorizesInsideTransaction($this->validator, $type, $principal),
         );
-        $result = $engine->process($mutation, new AdapterContext($principal->id, $principal->integrationId));
+        // The engine and the host's own table commit together or not at all.
+        // IlluminateStore turns the engine's transaction into a savepoint under
+        // this one, so a failure writing the row takes the mutation back with
+        // it - the alternative is a table that disagrees with the log, which is
+        // worse than either being wrong alone.
+        $apply = function () use ($engine, $mutation, $principal, $type): MutationResult {
+            $result = $engine->process($mutation, new AdapterContext($principal->id, $principal->integrationId));
+            if ($type instanceof PersistsRecords) {
+                $settled = $this->store->record($mutation->entity);
+                if ($settled !== null) {
+                    $settled->deleted ? $type->forget($settled) : $type->persist($settled);
+                }
+            }
+
+            return $result;
+        };
+
+        $result = $type instanceof PersistsRecords && $this->store instanceof IlluminateStore
+            ? $this->store->databaseConnection()->transaction($apply)
+            : $apply();
 
         // Whether the caller may see this row at all, judged on the canonical
         // record after the write. A field whitelist bounds columns; only the
