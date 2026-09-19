@@ -70,6 +70,44 @@ trait Syncable
         return self::$syncSuspended;
     }
 
+    /**
+     * Every ordinary save and delete becomes a mutation, so the log knows.
+     *
+     * An edit made anywhere in the application - an admin screen, a console
+     * command, a job - has to reach the devices, and the only way it can is by
+     * being in the log. A write that skips it is invisible to every offline
+     * client for ever, because they are following a sequence it never appeared
+     * in.
+     *
+     * These are events rather than overrides of save() and delete() on purpose:
+     * overriding delete() would collide with SoftDeletes, which a host is very
+     * likely to be using already.
+     *
+     * ATOMICITY: the event fires inside Model::save(), which Laravel does not
+     * wrap in a transaction. Wrap your own write in DB::transaction() if the
+     * row and the log must move together. The API path does this for you - a
+     * client's write and its record commit or roll back as one.
+     */
+    public static function bootSyncable(): void
+    {
+        static::saved(static function (self $model): void {
+            if (self::$syncSuspended) {
+                return;
+            }
+            app(SyncRecorder::class)->record(
+                $model,
+                changed: $model->wasRecentlyCreated ? $model->getAttributes() : $model->getChanges(),
+            );
+        });
+
+        static::deleted(static function (self $model): void {
+            if (self::$syncSuspended) {
+                return;
+            }
+            app(SyncRecorder::class)->record($model, deleting: true);
+        });
+    }
+
     /** The entity type written into every synced key. Never change it once rows exist. */
     public function syncEntityType(): string
     {
