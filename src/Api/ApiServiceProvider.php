@@ -40,7 +40,10 @@ class ApiServiceProvider extends ServiceProvider
     private function registerSyncRoutes(): void
     {
         $config = $this->app->make(Repository::class);
-        if ($config->get('sync.api.enabled') !== true) {
+        // Not a strict === true: Laravel's env() converts true/false/null but
+        // leaves "1" a string, so SYNC_API_ENABLED=1 - the most natural thing
+        // to write - registered no routes, raised nothing and logged nothing.
+        if (! self::enabled($config->get('sync.api.enabled'))) {
             return;
         }
 
@@ -103,6 +106,11 @@ class ApiServiceProvider extends ServiceProvider
         }
 
         return $map;
+    }
+
+    private static function enabled(mixed $value): bool
+    {
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) === true;
     }
 
     /** @param class-string $class */
