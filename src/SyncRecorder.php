@@ -10,13 +10,16 @@ use Cbox\Sync\Data\FieldOperation;
 use Cbox\Sync\Data\Mutation;
 use Cbox\Sync\Engine;
 use Cbox\Sync\Enums\MutationKind;
+use Cbox\Sync\Enums\MutationStatus;
 use Cbox\Sync\Laravel\Contracts\SyncableModel;
+use Cbox\Sync\Laravel\Exceptions\SyncConflict;
 use Cbox\Sync\ValueObjects\EntityKey;
 use Cbox\Sync\ValueObjects\MutationSequence;
 use Cbox\Sync\ValueObjects\RecordVersion;
 use Cbox\Sync\ValueObjects\Replica;
 use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
 
 /**
  * Turns an ordinary model save into a mutation, so the log knows about it.
@@ -81,18 +84,29 @@ class SyncRecorder
 
         $replica = new Replica('server');
 
-        $this->engine->process(
+        // A base version the caller supplied is what turns an ordinary write
+        // into a checked one. Without it the base is whatever is stored now,
+        // which is the truthful statement that this write knows the current
+        // state - and a write that knows the current state cannot conflict.
+        $stored = $current?->version->value ?? 0;
+        $base = $kind === MutationKind::Create ? 0 : ($this->claimedBase() ?? $stored);
+
+        $result = $this->engine->process(
             new Mutation(
                 'server-'.bin2hex(random_bytes(16)),
                 $entity,
                 $replica,
                 new MutationSequence($this->store->acknowledged($entity->space, $replica) + 1),
                 $kind,
-                new RecordVersion($kind === MutationKind::Create ? 0 : ($current?->version->value ?? 0)),
+                new RecordVersion($base),
                 $operations,
             ),
             new AdapterContext($this->actor()),
         );
+
+        if ($result->status === MutationStatus::Conflict || $result->status === MutationStatus::PreconditionFailed) {
+            throw SyncConflict::from($result);
+        }
     }
 
     /** @param Model&SyncableModel $model */
@@ -115,6 +129,38 @@ class SyncRecorder
         }
 
         return new EntityKey($type.':'.$scope, $type, (string) $id);
+    }
+
+    /**
+     * The version the caller says it was looking at, if it said.
+     *
+     * Read off the request rather than asked for as an argument, so an existing
+     * controller keeps its shape: a client that knows about versions sends one
+     * and gets conflict detection, and one that does not gets the ordinary
+     * last-write behaviour it has always had.
+     */
+    private function claimedBase(): ?int
+    {
+        $request = $this->request();
+        if ($request === null) {
+            return null;
+        }
+
+        $etag = $request->headers->get('If-Match');
+        if (is_string($etag) && ctype_digit(trim($etag, '"'))) {
+            return (int) trim($etag, '"');
+        }
+
+        $body = $request->input('base_version');
+
+        return is_int($body) || (is_string($body) && ctype_digit($body)) ? (int) $body : null;
+    }
+
+    private function request(): ?Request
+    {
+        $request = app()->bound('request') ? app('request') : null;
+
+        return $request instanceof Request ? $request : null;
     }
 
     /** Who made the change, when there is anyone to name. A job or a command has nobody. */
