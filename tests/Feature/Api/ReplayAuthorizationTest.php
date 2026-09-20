@@ -10,13 +10,9 @@ use Illuminate\Testing\TestResponse;
  * Retrying must reach the same answer even when the policy would now refuse
  * the write, because the write already happened.
  */
-function fileMutation(string $id, int $sequence, string $kind, int $base, array $operations = []): array
+function fileMutation(string $handle, int $sequence, string $kind, int $base, array $operations = []): array
 {
-    return [
-        'mutation_id' => 'm'.$sequence, 'id' => $id, 'replica' => 'device-1',
-        'sequence' => $sequence, 'kind' => $kind, 'base_version' => $base,
-        'operations' => $operations,
-    ];
+    return mutation('m'.$sequence, $handle, $sequence, $kind, $base, $operations);
 }
 
 function pushFile(object $test, array $mutation): TestResponse

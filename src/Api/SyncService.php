@@ -119,7 +119,16 @@ class SyncService implements SyncEndpoints
             }
         }
 
-        return ResultMapper::toWire($result, $type->readableFields($principal), $groups, $rowIsReadable);
+        // The device sent a handle it made up; this is the name the record
+        // has. Echoing the handle back is what lets the device find the row it
+        // created and rewrite anything still queued against it.
+        $identity = ['id' => $mutation->entity->id];
+        $handle = Payload::string($body, 'id');
+        if ($handle !== $mutation->entity->id) {
+            $identity['temp_id'] = $handle;
+        }
+
+        return $identity + ResultMapper::toWire($result, $type->readableFields($principal), $groups, $rowIsReadable);
     }
 
     public function bootstrap(Request $request, SyncPrincipal $principal): array

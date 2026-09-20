@@ -47,7 +47,12 @@ class MutationMapper
         try {
             return new Mutation(
                 IdentityBinding::mutationId($principal, Payload::string($body, 'mutation_id')),
-                new EntityKey($space, $entityType, Payload::string($body, 'id')),
+                // A create is named by the server; the id in the body is only
+                // a handle the device made up for itself. An update already
+                // knows the real name and sends it.
+                new EntityKey($space, $entityType, $kind === MutationKind::Create
+                    ? IdentityBinding::entityId($principal, Payload::string($body, 'mutation_id'))
+                    : Payload::string($body, 'id')),
                 IdentityBinding::replica($principal, Payload::string($body, 'replica')),
                 new MutationSequence(Payload::int($body, 'sequence')),
                 $kind,

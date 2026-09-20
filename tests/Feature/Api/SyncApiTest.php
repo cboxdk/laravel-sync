@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use Cbox\Sync\Contracts\Store;
+use Cbox\Sync\Laravel\Api\Support\IdentityBinding;
+use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Illuminate\Testing\TestResponse;
 
 /** Real HTTP through the router, the way a device would call it. */
@@ -13,13 +15,39 @@ function push(object $test, string $principal, array $mutation): TestResponse
     ]);
 }
 
-function mutation(string $id, string $entity, int $sequence, string $kind, int $base, array $operations, string $replica = 'device-1'): array
+/**
+ * A create is named by the server, so the second argument is only the handle a
+ * device uses to refer to the record until the answer comes back. Later
+ * mutations against the same handle are rewritten to the name the server gave
+ * it - which is what a real client does with the id in the response.
+ */
+function mutation(string $id, string $handle, int $sequence, string $kind, int $base, array $operations, string $replica = 'device-1', string $principal = 'alice'): array
 {
+    if ($kind === 'create') {
+        remember($handle, IdentityBinding::entityId(new SyncPrincipal($principal, $principal), $id));
+    }
+
     return [
-        'mutation_id' => $id, 'id' => $entity, 'replica' => $replica,
+        'mutation_id' => $id, 'id' => named($handle), 'replica' => $replica,
         'sequence' => $sequence, 'kind' => $kind, 'base_version' => $base,
         'operations' => $operations,
     ];
+}
+
+function remember(string $handle, ?string $name = null): string
+{
+    static $names = [];
+    if ($name !== null) {
+        $names[$handle] = $name;
+    }
+
+    return $names[$handle] ?? $handle;
+}
+
+/** The name the server gave the record this handle refers to. */
+function named(string $handle): string
+{
+    return remember($handle);
 }
 
 function setOp(string $field, mixed $value): array
@@ -35,7 +63,7 @@ it('carries a task from create through bootstrap', function () {
 
     $page->assertOk()
         ->assertJsonPath('complete', true)
-        ->assertJsonPath('records.0.id', 'task-1')
+        ->assertJsonPath('records.0.id', named('task-1'))
         ->assertJsonPath('records.0.fields.title.value', 'Ship it');
 
     // A view filters rows; the field whitelist is what bounds columns.

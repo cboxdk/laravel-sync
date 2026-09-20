@@ -16,6 +16,12 @@ class Member extends Authenticatable
 {
     protected $table = 'members';
 
+    // Without these Eloquent casts the key to int, so getAuthIdentifier()
+    // returns 0 for every member and every principal is the same one.
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+
     public $timestamps = false;
 
     protected $fillable = ['id', 'team_id'];

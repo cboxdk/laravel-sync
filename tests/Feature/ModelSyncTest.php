@@ -6,6 +6,8 @@ use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Contracts\SyncPrincipals;
 use Cbox\Sync\Laravel\Api\GuardPrincipals;
 use Cbox\Sync\Laravel\Api\ModelSyncableType;
+use Cbox\Sync\Laravel\Api\Support\IdentityBinding;
+use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\Laravel\Syncable;
 use Cbox\Sync\Laravel\Tests\Fixtures\Member;
 use Cbox\Sync\Laravel\Tests\Fixtures\Note;
@@ -45,6 +47,15 @@ beforeEach(function () {
 function member(string $id, string $team): Member
 {
     return Member::create(['id' => $id, 'team_id' => $team]);
+}
+
+/**
+ * The name the server gives a record created by this mutation. A create only
+ * ever carries a handle the device made up for itself.
+ */
+function noteId(string $principal, string $mutationId = 'm1'): string
+{
+    return IdentityBinding::entityId(new SyncPrincipal($principal, $principal), $mutationId);
 }
 
 function pushNote(array $overrides = []): TestResponse
@@ -111,7 +122,7 @@ it('writes the settled value into the application table', function () {
 
     pushNote()->assertOk();
 
-    $note = Note::find('n1');
+    $note = Note::find(noteId('erin'));
     expect($note)->not->toBeNull();
     expect($note->title)->toBe('First note');
     expect($note->status)->toBe('open');
@@ -123,11 +134,11 @@ it('removes the row when the record becomes a tombstone', function () {
     pushNote()->assertOk();
 
     $this->postJson('/sync/push', [
-        'type' => 'notes', 'scope' => 'owners', 'mutation_id' => 'm2', 'id' => 'n1',
+        'type' => 'notes', 'scope' => 'owners', 'mutation_id' => 'm2', 'id' => noteId('frank'),
         'replica' => 'device', 'sequence' => 2, 'kind' => 'delete', 'base_version' => 1,
     ])->assertOk();
 
-    expect(Note::find('n1'))->toBeNull();
+    expect(Note::find(noteId('frank')))->toBeNull();
 });
 
 /** A row the engine refused must not be in the table either. */
@@ -136,7 +147,7 @@ it('leaves the table untouched when the mutation is refused', function () {
 
     pushNote()->assertForbidden();
 
-    expect(Note::find('n1'))->toBeNull();
+    expect(Note::find(noteId('gina')))->toBeNull();
 });
 
 /**

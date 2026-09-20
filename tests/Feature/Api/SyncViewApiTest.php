@@ -36,7 +36,17 @@ it('pages a bootstrap and hands over a cursor only on the last page', function (
         $body = ['token' => $page->json('next_token')];
     } while ($page->json('next_token') !== null);
 
-    expect($seen)->toBe(['t1', 't2', 't3']);
+    // Each record exactly once, and in the order the store pages them. The
+    // names are the server's, so the order is theirs too - what this pins is
+    // that paging neither skips nor repeats, which is the property a keyset
+    // cursor exists to give.
+    $expected = array_map(named(...), ['t1', 't2', 't3']);
+    sort($expected);
+    $sorted = $seen;
+    sort($sorted);
+
+    expect($sorted)->toBe($expected);
+    expect($seen)->toBe(array_values(array_unique($seen)));
     expect($pages)->toBe(2);
     expect($page->json('complete'))->toBeTrue();
     expect($page->json('cursor.position'))->toBeInt();
@@ -99,7 +109,7 @@ it('resolves a preserved conflict using what the push response returned', functi
 
     $resolved = $this->postJson('/sync/push', [
         'type' => 'tasks', 'scope' => 'team-1',
-        'mutation_id' => 'r1', 'id' => 't1', 'replica' => 'device-1',
+        'mutation_id' => 'r1', 'id' => named('t1'), 'replica' => 'device-1',
         'sequence' => 3, 'kind' => 'resolve', 'base_version' => 2,
         'operations' => [setOp('title', 'agreed')],
         'resolution' => [
