@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 - 2026-09-20
+
+### Security (breaking)
+
+- **The server names a new record, not the client.** An id a client chooses is attacker-controlled input in a key position: it can squat an identifier another tenant is about to use, and the engine's own `entity_exists` answer turns a guessed one into an oracle for what already exists. A create now carries only a handle the device made up for itself, and the response returns both the name the server gave the record and the handle it came in under, so a device can find the row it created and rewrite anything still queued against the handle.
+
+  The name is derived from the principal-namespaced mutation id rather than random. A lost response is the normal case on a mobile network, and a random name would turn one offline create into two rows on the retry - the receipt cannot rescue that, because it is found by mutation id while the entity key has to be built before the engine is reached. Deriving it makes the retry land on the same record for free. The principal is inside the hash, so no caller can produce a name another caller would produce, and reaching an existing record's name would mean finding a sha256 preimage.
+
+  **Breaking:** the `id` a client sends on a `create` is ignored, and the record is stored under the name in the response. An update still names the record it means.
+
+### Changed
+
+- Allows `cboxdk/sync` `^0.6`. Nothing here uses what 0.6 added, but the client requires it and an application installs both.
+
 ## 0.3.0 - 2026-09-20
 
 ### Added
