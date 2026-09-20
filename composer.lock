@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "0d387f666ac9922dec3831737cbfa52e",
+    "content-hash": "adc4a305f655675520b47e18d77cc5bb",
     "packages": [
         {
             "name": "brick/math",
@@ -141,16 +141,16 @@
         },
         {
             "name": "cboxdk/sync",
-            "version": "v0.4.0",
+            "version": "v0.5.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/cboxdk/sync.git",
-                "reference": "9c04aa8422edef914d465e976733707145fcce7b"
+                "reference": "6151aada73e7fc08c076bdbd23d7c29745e2164f"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/cboxdk/sync/zipball/9c04aa8422edef914d465e976733707145fcce7b",
-                "reference": "9c04aa8422edef914d465e976733707145fcce7b",
+                "url": "https://api.github.com/repos/cboxdk/sync/zipball/6151aada73e7fc08c076bdbd23d7c29745e2164f",
+                "reference": "6151aada73e7fc08c076bdbd23d7c29745e2164f",
                 "shasum": ""
             },
             "require": {
@@ -175,9 +175,9 @@
             "description": "Framework-independent sync engine with explicit field conflicts for offline-first applications",
             "support": {
                 "issues": "https://github.com/cboxdk/sync/issues",
-                "source": "https://github.com/cboxdk/sync/tree/v0.4.0"
+                "source": "https://github.com/cboxdk/sync/tree/v0.5.0"
             },
-            "time": "2026-09-18T19:25:23+00:00"
+            "time": "2026-09-20T07:00:58+00:00"
         },
         {
             "name": "dflydev/dot-access-data",

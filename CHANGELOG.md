@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`use Syncable` on a model is the whole registration.** The entity type is the table, the synced fields are the fillable ones, the key and timestamps are never a client's to set, and the tenant is the first tenancy-shaped column the table actually has - each a convention a property overrides. Authorization goes to the Gate, so the host's existing policy decides and nothing is declared twice. Registering was previously a 55-line class implementing seven methods.
+- **The settled record is written into the application's own table**, inside the mutation's own transaction, so a failure writing the row takes the mutation back with it. Only synced fields are touched; the rest of the row belongs to the application.
+- **Ordinary model saves enter the log.** An edit from an admin screen, a console command or a job was invisible to every offline device, because they follow a sequence it never appeared in. Saving or deleting a model that uses the trait now records a mutation. The log decides whether a write is a create, not the model.
+- **Conflict detection on the REST endpoints a host already has.** No new routes: a client that sends the version it was looking at - `base_version` in the body, or an `If-Match` header - gets its write checked against that version, and a write that lost the race raises `SyncConflict`, which Laravel renders as 409 carrying what the record says now. A client that sends nothing gets the ordinary last-write behaviour it always had. Two people editing different fields of the same row do not conflict at all.
+- `BaseSyncableType` for a type that is not backed by a model: four methods from two properties, and the three that encode host policy left abstract.
+
+### Fixed
+
+- **`SYNC_API_ENABLED=1` turned nothing on.** Laravel's `env()` converts `true`, `false` and `null` but leaves `"1"` a string, and the check was a strict `=== true` - so the most natural way to enable the API registered no routes, raised nothing and logged nothing. Every ordinary spelling of yes and no is now accepted, and anything unrecognised stays off.
+- **A permanent database error was retried for ever.** The retry classification used a hand-written SQLSTATE list: `'1213'` and `'1205'` are driver error numbers that never appear in `getCode()`, so those entries were dead, and a lock wait timeout is `HY000` - but so is a missing column default and a missing table. A schema mistake returned 503 `retriable` and the client retried it against production with no attempt counter. Laravel's own `DetectsConcurrencyErrors` is the decision this reimplemented.
+- **An upgrade kept a schema the adapter could no longer write to.** The create migration runs once and `CREATE TABLE IF NOT EXISTS` does nothing to an existing table, so a second migration now reconciles the difference. It is idempotent.
+- `src/` imports `Illuminate\Http`, `Illuminate\Routing` and `Symfony\Component\HttpFoundation` and required none of them. It never breaks in an application, because `laravel/framework` supplies them - it breaks for anyone installing the split packages.
+
+### Changed
+
+- Requires `cboxdk/sync` `^0.5` for `EntityTypeView` and the entity-type narrowing a view's delta depends on.
+
 ## 0.2.0 - 2026-09-18
 
 ### Security
