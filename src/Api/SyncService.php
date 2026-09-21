@@ -50,7 +50,7 @@ class SyncService implements SyncEndpoints
         $mutation = MutationMapper::fromWire(
             $body, $principal, $type->entityType(), $space,
             $type->writableFields($principal),
-            $this->setting('max_operations', 64),
+            $this->setting('api.max_operations', 64),
         );
 
         // A mutation this server has already processed is answered from its
@@ -158,7 +158,7 @@ class SyncService implements SyncEndpoints
         $context = $this->views->context($type->space($principal, $scope), $view);
         $cursor = ViewMapper::cursorFromWire($body, $context);
 
-        $budget = min(Payload::optionalInt($body, 'limit') ?? 100, $this->setting('max_commits', 500));
+        $budget = min(Payload::optionalInt($body, 'limit') ?? 100, $this->setting('api.max_commits', 500));
         $page = $this->views->delta($cursor, $view, max(1, $budget));
 
         return ViewMapper::deltaToWire($page, $type->readableFields($principal));
@@ -184,16 +184,25 @@ class SyncService implements SyncEndpoints
         }
     }
 
+    /**
+     * The page a bootstrap serves.
+     *
+     * A client that asks for a size gets it, bounded by max_page_size. One that
+     * asks for nothing gets the host's configured default rather than a literal
+     * buried here - which is what sync.bootstrap.page_size is for, and it was
+     * read nowhere, so an operator who set it saw nothing change.
+     */
     private function pageSize(\stdClass $body): int
     {
-        $requested = Payload::optionalInt($body, 'page_size') ?? 100;
+        $requested = Payload::optionalInt($body, 'page_size') ?? $this->setting('bootstrap.page_size', 100);
 
-        return max(1, min($requested, $this->setting('max_page_size', 500)));
+        return max(1, min($requested, $this->setting('api.max_page_size', 500)));
     }
 
+    /** @param string $key A path under `sync.`, so a reader is not confined to one section. */
     private function setting(string $key, int $default): int
     {
-        $value = $this->config->get('sync.api.'.$key);
+        $value = $this->config->get('sync.'.$key);
 
         return is_int($value) && $value > 0 ? $value : $default;
     }

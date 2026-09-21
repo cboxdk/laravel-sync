@@ -28,3 +28,33 @@ it('stays off for every ordinary way of writing no', function (mixed $value) {
 
     expect(collect(Route::getRoutes())->contains(fn ($route) => $route->uri() === 'sync/push'))->toBeFalse();
 })->with([false, 0, '0', 'false', 'off', 'no', null, '', 'nonsense']);
+
+/**
+ * sync.bootstrap.page_size was documented, had an env var, and was read
+ * nowhere - so an operator who set it to speed up a large bootstrap saw
+ * nothing change and had no error to find.
+ */
+beforeEach(function () {
+    foreach ([['t1', 'a'], ['t2', 'b']] as [$id, $title]) {
+        $this->postJson('/sync/push', ['type' => 'tasks', 'scope' => 'team-1', 'mutation_id' => 'seed-'.$id, 'id' => $id, 'replica' => 'seed', 'sequence' => (int) substr($id, 1), 'kind' => 'create', 'base_version' => 0, 'operations' => [['field' => 'title', 'op' => 'set', 'value' => $title], ['field' => 'status', 'op' => 'set', 'value' => 'open']]], ['X-Test-Principal' => 'alice'])->assertOk();
+    }
+});
+
+it('uses the configured bootstrap page size when a client asks for none', function () {
+    config()->set('sync.bootstrap.page_size', 1);
+
+    $page = $this->postJson('/sync/bootstrap', ['type' => 'tasks', 'scope' => 'team-1'], ['X-Test-Principal' => 'alice']);
+
+    $page->assertOk();
+    expect($page->json('records'))->toHaveCount(1);
+    expect($page->json('complete'))->toBeFalse();
+});
+
+it('still lets a client ask for a bigger page than the default', function () {
+    config()->set('sync.bootstrap.page_size', 1);
+
+    $page = $this->postJson('/sync/bootstrap', ['type' => 'tasks', 'scope' => 'team-1', 'page_size' => 10], ['X-Test-Principal' => 'alice']);
+
+    expect($page->json('records'))->toHaveCount(2);
+    expect($page->json('complete'))->toBeTrue();
+});
