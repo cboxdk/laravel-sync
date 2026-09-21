@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0 - 2026-09-21
+
+### Added
+
+- **A commit raises `SpaceAdvanced`**, so devices stop polling blind. Wire it to a broadcast on a private per-space channel, to the shipped webhook, to a queued job, or to nothing - a device that only polls is still correct, just less prompt, which is the property that lets delivery be at-most-once.
+
+  It carries the space and the watermark and nothing else. The log is per space, but authorization is per principal and per view: a payload with the changes would hand every listener - and every broadcast subscriber - everything written there, including rows and fields a given reader may not see.
+
+- **Webhook delivery**, queued, over the two packages that already solve its hard parts. `cboxdk/laravel-ssrf` validates the URL and pins the connection to the addresses it resolved: a callback URL is tenant-supplied input aimed at your own network, and DNS that answers publicly at check time and privately a moment later is the textbook way past a naive check. `cboxdk/laravel-webhook-signature` signs the POST and owns the secret and its rotation, so no secret appears in this package's config. Setting `sync.webhooks.url` without both installed is refused at boot by name, so nobody can turn on the unprotected version with one env var.
+
+- **`openapi.yaml`** describing all three endpoints - every request and response field, every error code and what a client should do about each. The docs described bootstrap and delta in prose, left three push response fields and two error codes out, and never named the request fields at all; anyone generating a client from them, increasingly an agent rather than a person, would have got it wrong.
+
+  It is checked against reality rather than maintained by hand: the tests assert it against what the endpoints actually answer, in both directions - a documented field the API does not return fails, and a returned field the description does not mention fails too.
+
+- **A brief to hand an agent** (`docs/getting-started/for-an-agent.md`), covering the rules a schema cannot express: that an empty object and an empty array are different values, that a sequence is assigned when sending and not when queueing, that a create carries a handle rather than an id, that `remove` means left the view and not deleted, and that a 200 can still mean the write did not land. A test asserts every status, code and endpoint it names against the description.
+
+### Changed
+
+- Requires `cboxdk/sync` `^0.8`.
+
 ## 0.5.0 - 2026-09-21
 
 ### Added
