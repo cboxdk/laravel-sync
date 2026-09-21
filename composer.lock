@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "cd454e500b2bd33d1fcdbc2f303a8bdf",
+    "content-hash": "da6a0bd79988a516636a4107dbeedd7e",
     "packages": [
         {
             "name": "brick/math",
@@ -141,17 +141,11 @@
         },
         {
             "name": "cboxdk/sync",
-            "version": "v0.7.0",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/cboxdk/sync.git",
-                "reference": "d9f5f59bec26c497d3244b34f3f2461c414d469e"
-            },
+            "version": "dev-main",
             "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/cboxdk/sync/zipball/d9f5f59bec26c497d3244b34f3f2461c414d469e",
-                "reference": "d9f5f59bec26c497d3244b34f3f2461c414d469e",
-                "shasum": ""
+                "type": "path",
+                "url": "../sync",
+                "reference": "c610f6593d745bf66368a3e95890c4fc1395b62c"
             },
             "require": {
                 "ext-pdo": "*",
@@ -168,16 +162,70 @@
                     "Cbox\\Sync\\": "src/"
                 }
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "autoload-dev": {
+                "psr-4": {
+                    "Cbox\\Sync\\Tests\\": "tests/"
+                }
+            },
+            "scripts": {
+                "test": [
+                    "pest"
+                ],
+                "lint": [
+                    "pint --test"
+                ],
+                "format": [
+                    "pint"
+                ],
+                "analyse": [
+                    "phpstan analyse --no-progress --memory-limit=1G"
+                ],
+                "license-check": [
+                    "@php bin/check-licenses.php"
+                ],
+                "sbom": [
+                    "@php bin/generate-sbom.php"
+                ],
+                "simulate": [
+                    "@php bin/simulate.php"
+                ],
+                "qa": [
+                    "@lint",
+                    "@analyse",
+                    "@test",
+                    "@test:rehydrating",
+                    "@test:sqlite",
+                    "@test:client",
+                    "@license-check",
+                    "@security-audit"
+                ],
+                "security-audit": [
+                    "@composer audit --locked"
+                ],
+                "docs:requirements": [
+                    "@php bin/generate-requirements.php"
+                ],
+                "test:rehydrating": [
+                    "SYNC_STORE=rehydrating pest"
+                ],
+                "test:sqlite": [
+                    "SYNC_STORE=sqlite pest"
+                ],
+                "concurrency": [
+                    "@php bin/concurrency.php"
+                ],
+                "test:client": [
+                    "SYNC_CLIENT=sqlite pest"
+                ]
+            },
             "license": [
                 "MIT"
             ],
             "description": "Framework-independent sync engine with explicit field conflicts for offline-first applications",
-            "support": {
-                "issues": "https://github.com/cboxdk/sync/issues",
-                "source": "https://github.com/cboxdk/sync/tree/v0.7.0"
-            },
-            "time": "2026-09-21T08:57:08+00:00"
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
         },
         {
             "name": "dflydev/dot-access-data",
@@ -5974,6 +6022,163 @@
             "time": "2026-03-29T15:46:14+00:00"
         },
         {
+            "name": "cboxdk/laravel-ssrf",
+            "version": "v1.4.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/cboxdk/laravel-ssrf.git",
+                "reference": "ba4d843618071ee4e04097565ec3ed8b7078b43b"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/cboxdk/laravel-ssrf/zipball/ba4d843618071ee4e04097565ec3ed8b7078b43b",
+                "reference": "ba4d843618071ee4e04097565ec3ed8b7078b43b",
+                "shasum": ""
+            },
+            "require": {
+                "guzzlehttp/guzzle": "^7.8.2 || ^8.0",
+                "guzzlehttp/promises": "^2.0 || ^3.0",
+                "illuminate/contracts": "^12.0 || ^13.0",
+                "illuminate/http": "^12.0 || ^13.0",
+                "illuminate/support": "^12.0 || ^13.0",
+                "php": "^8.4",
+                "psr/http-message": "^1.1 || ^2.0",
+                "symfony/http-foundation": "^7.0 || ^8.0"
+            },
+            "require-dev": {
+                "guzzlehttp/psr7": "^2.9 || ^3.0",
+                "larastan/larastan": "^3.0",
+                "laravel/pint": "^1.18",
+                "orchestra/testbench": "^10.0 || ^11.0",
+                "pestphp/pest": "^4.0 || ^5.0"
+            },
+            "bin": [
+                "bin/check-licenses.php",
+                "bin/generate-sbom.php"
+            ],
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "Cbox\\Ssrf\\SsrfServiceProvider"
+                    ]
+                },
+                "branch-alias": {
+                    "dev-main": "1.4.x-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Cbox\\Ssrf\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Cbox",
+                    "homepage": "https://cboxdk.com"
+                }
+            ],
+            "description": "Cbox SSRF — a hardened, config-driven guard against server-side request forgery for outbound URLs in Laravel. Blocks private/reserved/cloud-metadata targets, pins DNS, and refuses redirects.",
+            "keywords": [
+                "http",
+                "laravel",
+                "security",
+                "ssrf",
+                "url"
+            ],
+            "support": {
+                "issues": "https://github.com/cboxdk/laravel-ssrf/issues",
+                "security": "https://github.com/cboxdk/laravel-ssrf/security/policy",
+                "source": "https://github.com/cboxdk/laravel-ssrf"
+            },
+            "time": "2026-08-05T09:29:50+00:00"
+        },
+        {
+            "name": "cboxdk/laravel-webhook-signature",
+            "version": "v0.1.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/cboxdk/laravel-webhook-signature.git",
+                "reference": "813909fced59b4e66ef7e45fb8ec6bd9e73c3d5a"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/cboxdk/laravel-webhook-signature/zipball/813909fced59b4e66ef7e45fb8ec6bd9e73c3d5a",
+                "reference": "813909fced59b4e66ef7e45fb8ec6bd9e73c3d5a",
+                "shasum": ""
+            },
+            "require": {
+                "ext-json": "*",
+                "guzzlehttp/promises": "^2.0 || ^3.0",
+                "illuminate/contracts": "^12.0 || ^13.0",
+                "illuminate/http": "^12.0 || ^13.0",
+                "illuminate/support": "^12.0 || ^13.0",
+                "php": "^8.4",
+                "psr/http-message": "^1.1 || ^2.0",
+                "psr/log": "^3.0"
+            },
+            "require-dev": {
+                "larastan/larastan": "^3.0",
+                "laravel/pint": "^1.30",
+                "orchestra/testbench": "^10.0 || ^11.0",
+                "pestphp/pest": "^4.0 || ^5.0"
+            },
+            "bin": [
+                "bin/check-licenses.php",
+                "bin/generate-sbom.php"
+            ],
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "aliases": {
+                        "Webhooks": "Cbox\\WebhookSignature\\Facades\\Webhooks"
+                    },
+                    "providers": [
+                        "Cbox\\WebhookSignature\\WebhookSignatureServiceProvider"
+                    ]
+                },
+                "branch-alias": {
+                    "dev-main": "0.1.x-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Cbox\\WebhookSignature\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Cbox",
+                    "homepage": "https://cboxdk.com"
+                }
+            ],
+            "description": "Cbox Webhook Signature — verification-only webhook signature checking for Laravel, with drivers for GitHub, Stripe, Slack, Shopify, Standard Webhooks, Twilio, Mailgun and Postal. No migrations, no queue, no models. Secret rotation, replay protection and send-time outbound signing included.",
+            "keywords": [
+                "hmac",
+                "laravel",
+                "rsa",
+                "security",
+                "signature",
+                "verification",
+                "webhook",
+                "webhooks"
+            ],
+            "support": {
+                "issues": "https://github.com/cboxdk/laravel-webhook-signature/issues",
+                "security": "https://github.com/cboxdk/laravel-webhook-signature/security/policy",
+                "source": "https://github.com/cboxdk/laravel-webhook-signature"
+            },
+            "time": "2026-08-05T10:28:32+00:00"
+        },
+        {
             "name": "composer/pcre",
             "version": "3.4.0",
             "source": {
@@ -10219,9 +10424,18 @@
             "time": "2026-06-15T15:31:57+00:00"
         }
     ],
-    "aliases": [],
+    "aliases": [
+        {
+            "package": "cboxdk/sync",
+            "version": "dev-main",
+            "alias": "0.7.99",
+            "alias_normalized": "0.7.99.0"
+        }
+    ],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "cboxdk/sync": 20
+    },
     "prefer-stable": false,
     "prefer-lowest": false,
     "platform": {

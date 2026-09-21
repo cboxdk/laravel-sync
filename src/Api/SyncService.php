@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cbox\Sync\Laravel\Api;
 
+use Cbox\Sync\Contracts\CommitObserver;
 use Cbox\Sync\Contracts\ConflictResolver;
 use Cbox\Sync\Contracts\EntityValidator;
 use Cbox\Sync\Contracts\IdGenerator;
@@ -24,6 +25,7 @@ use Cbox\Sync\Laravel\Api\Support\ResultMapper;
 use Cbox\Sync\Laravel\Api\Support\ViewMapper;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\Laravel\IlluminateStore;
+use Cbox\Sync\Observers\NullCommitObserver;
 use Cbox\Sync\Views\BootstrapToken;
 use Cbox\Sync\Views\ViewSyncService;
 use Illuminate\Contracts\Config\Repository;
@@ -39,6 +41,7 @@ class SyncService implements SyncEndpoints
         private readonly ViewSyncService $views,
         private readonly SyncableTypes $types,
         private readonly Repository $config,
+        private readonly CommitObserver $observer = new NullCommitObserver,
     ) {}
 
     public function push(Request $request, SyncPrincipal $principal): array
@@ -80,6 +83,7 @@ class SyncService implements SyncEndpoints
             $this->resolver,
             $this->ids,
             new AuthorizesInsideTransaction($this->validator, $type, $principal),
+            $this->observer,
         );
         // The engine and the host's own table commit together or not at all.
         // IlluminateStore turns the engine's transaction into a savepoint under

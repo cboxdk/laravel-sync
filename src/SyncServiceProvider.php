@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Cbox\Sync\Laravel;
 
+use Cbox\Ssrf\Contracts\UrlGuard;
+use Cbox\Sync\Contracts\CommitObserver;
 use Cbox\Sync\Contracts\ConflictResolver;
 use Cbox\Sync\Contracts\EntityValidator;
 use Cbox\Sync\Contracts\IdGenerator;
@@ -17,6 +19,7 @@ use Cbox\Sync\Views\FrozenBootstrapSessions;
 use Cbox\Sync\Views\KeysetBootstrapSessions;
 use Cbox\Sync\Views\ViewSyncService;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\ServiceProvider;
@@ -43,11 +46,16 @@ class SyncServiceProvider extends ServiceProvider
         $this->app->bindIf(EntityValidator::class, fn (): EntityValidator => new AcceptAll);
         $this->app->bindIf(IdGenerator::class, fn (): IdGenerator => new UuidV7Generator);
 
+        // bindIf, so a host that wants a different notifier - or none - binds
+        // its own without fighting this one.
+        $this->app->bindIf(CommitObserver::class, Api\DispatchesSpaceAdvanced::class);
+
         $this->app->singleton(Engine::class, fn (Application $app): Engine => new Engine(
             $app->make(Store::class),
             $app->make(ConflictResolver::class),
             $app->make(IdGenerator::class),
             $app->make(EntityValidator::class),
+            $app->make(CommitObserver::class),
         ));
 
         $this->app->singleton(BootstrapSessions::class, function (Application $app): BootstrapSessions {
@@ -74,6 +82,7 @@ class SyncServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->app->register(Api\ApiServiceProvider::class);
+        $this->registerWebhookDelivery();
 
         if ($this->app->runningInConsole()) {
             $this->commands([Console\PruneSyncCommand::class]);
@@ -93,5 +102,42 @@ class SyncServiceProvider extends ServiceProvider
         $value = $this->setting($app, $key);
 
         return is_string($value) && $value !== '' ? $value : $fallback;
+    }
+
+    /**
+     * Wires webhook delivery only when a URL is configured, and refuses to do it
+     * half way.
+     *
+     * A callback URL is tenant-supplied input aimed at this server's own
+     * network, and a receiver that cannot tell our POST from anyone else's has
+     * learned only that someone knows its URL. Shipping the delivery without
+     * both guards would let a host turn on the unprotected version by setting
+     * one env var, so they are required at the point it matters rather than
+     * merely suggested.
+     */
+    private function registerWebhookDelivery(): void
+    {
+        $url = $this->app->make(Repository::class)->get('sync.webhooks.url');
+        if (! is_string($url) || $url === '') {
+            return;
+        }
+
+        foreach ([
+            UrlGuard::class => 'cboxdk/laravel-ssrf',
+            \Cbox\WebhookSignature\Contracts\Webhooks::class => 'cboxdk/laravel-webhook-signature',
+        ] as $contract => $package) {
+            if (! interface_exists($contract)) {
+                throw new \RuntimeException(sprintf(
+                    'sync.webhooks.url is set but %s is not installed. A callback URL is tenant-supplied input '
+                    ."aimed at this server's own network, and an unsigned delivery tells a receiver only that "
+                    .'someone knows its URL. Run: composer require %s',
+                    $package,
+                    $package,
+                ));
+            }
+        }
+
+        $this->app->make(Dispatcher::class)
+            ->listen(Events\SpaceAdvanced::class, Webhooks\DeliverSpaceAdvanced::class);
     }
 }

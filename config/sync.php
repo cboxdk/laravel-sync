@@ -86,6 +86,37 @@ return [
         'max_commits' => 500,
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Webhooks
+    |--------------------------------------------------------------------------
+    |
+    | A space advancing is announced as a SpaceAdvanced event. Wire it to
+    | whatever you already run - a broadcast for web clients, this webhook for
+    | server-to-server consumers, or nothing at all: a device that only polls
+    | is still correct, just less prompt.
+    |
+    | The payload is the watermark and nothing else. The log is per space and
+    | authorization is per principal and per view, so a body carrying the
+    | changes would hand a receiver everything written there, including rows and
+    | fields its users may not see.
+    |
+    | Enabling this needs cboxdk/laravel-ssrf and cboxdk/laravel-webhook-signature:
+    | the URL is tenant-supplied input aimed at your own network, and a receiver
+    | that cannot tell your POST from anyone else's has learned only that someone
+    | knows its URL. The secret lives in the signature package, not here.
+    |
+    */
+
+    'webhooks' => [
+        'url' => env('SYNC_WEBHOOK_URL'),
+
+        // The endpoint name configured in cboxdk/laravel-webhook-signature.
+        'endpoint' => env('SYNC_WEBHOOK_ENDPOINT', 'sync'),
+
+        'timeout' => 5,
+    ],
+
     'retention' => [
         // The default for `php artisan sync:prune <space>`. Nothing prunes on its
         // own: how much history a tenant still owes its slowest device is a
