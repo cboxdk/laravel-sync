@@ -1,7 +1,7 @@
 {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",
-    "serialNumber": "urn:uuid:3721e4ea-e9c3-592c-8677-7b8f6df58c42",
+    "serialNumber": "urn:uuid:b879fb23-34be-5df7-9ff7-9b3a33b51c4c",
     "version": 1,
     "metadata": {
         "component": {
@@ -90,12 +90,62 @@
         },
         {
             "type": "library",
-            "bom-ref": "pkg:composer/cboxdk/sync@v0.7.0",
+            "bom-ref": "pkg:composer/cboxdk/laravel-ssrf@v1.4.0",
+            "group": "cboxdk",
+            "name": "laravel-ssrf",
+            "version": "v1.4.0",
+            "scope": "optional",
+            "purl": "pkg:composer/cboxdk/laravel-ssrf@v1.4.0",
+            "description": "Cbox SSRF — a hardened, config-driven guard against server-side request forgery for outbound URLs in Laravel. Blocks private/reserved/cloud-metadata targets, pins DNS, and refuses redirects.",
+            "licenses": [
+                {
+                    "expression": "MIT"
+                }
+            ],
+            "externalReferences": [
+                {
+                    "type": "distribution",
+                    "url": "https://api.github.com/repos/cboxdk/laravel-ssrf/zipball/ba4d843618071ee4e04097565ec3ed8b7078b43b"
+                },
+                {
+                    "type": "vcs",
+                    "url": "https://github.com/cboxdk/laravel-ssrf.git"
+                }
+            ]
+        },
+        {
+            "type": "library",
+            "bom-ref": "pkg:composer/cboxdk/laravel-webhook-signature@v0.1.0",
+            "group": "cboxdk",
+            "name": "laravel-webhook-signature",
+            "version": "v0.1.0",
+            "scope": "optional",
+            "purl": "pkg:composer/cboxdk/laravel-webhook-signature@v0.1.0",
+            "description": "Cbox Webhook Signature — verification-only webhook signature checking for Laravel, with drivers for GitHub, Stripe, Slack, Shopify, Standard Webhooks, Twilio, Mailgun and Postal. No migrations, no queue, no models. Secret rotation, replay protection and send-time outbound signing included.",
+            "licenses": [
+                {
+                    "expression": "MIT"
+                }
+            ],
+            "externalReferences": [
+                {
+                    "type": "distribution",
+                    "url": "https://api.github.com/repos/cboxdk/laravel-webhook-signature/zipball/813909fced59b4e66ef7e45fb8ec6bd9e73c3d5a"
+                },
+                {
+                    "type": "vcs",
+                    "url": "https://github.com/cboxdk/laravel-webhook-signature.git"
+                }
+            ]
+        },
+        {
+            "type": "library",
+            "bom-ref": "pkg:composer/cboxdk/sync@dev-main",
             "group": "cboxdk",
             "name": "sync",
-            "version": "v0.7.0",
+            "version": "dev-main",
             "scope": "required",
-            "purl": "pkg:composer/cboxdk/sync@v0.7.0",
+            "purl": "pkg:composer/cboxdk/sync@dev-main",
             "description": "Framework-independent sync engine with explicit field conflicts for offline-first applications",
             "licenses": [
                 {
@@ -105,11 +155,7 @@
             "externalReferences": [
                 {
                     "type": "distribution",
-                    "url": "https://api.github.com/repos/cboxdk/sync/zipball/d9f5f59bec26c497d3244b34f3f2461c414d469e"
-                },
-                {
-                    "type": "vcs",
-                    "url": "https://github.com/cboxdk/sync.git"
+                    "url": "../sync"
                 }
             ]
         },

@@ -1,0 +1,401 @@
+openapi: 3.1.0
+info:
+  title: Cbox Sync
+  version: "1"
+  description: |
+    Offline-capable sync with field-level conflict detection.
+
+    Three endpoints. A device **pushes** one mutation at a time, **bootstraps** a
+    view once, then follows **delta** from a cursor. The mental model in four
+    sentences:
+
+    - A *space* is the tenancy and ordering boundary. Every write in it gets a
+      gapless sequence number the server assigns, so there is always one true
+      order. Clocks are never used.
+    - A *view* is the filtered window a device reads. Its cursor is bound to a
+      context fingerprint; when that changes, the server says `reset_required`
+      and the device rebuilds.
+    - Conflicts are detected **per field** against `base_version`. Two people
+      editing different fields of the same record do not conflict.
+    - Every mutation carries a client-generated `mutation_id`. Re-sending it is
+      safe and returns the same answer, which is what makes a lost response
+      recoverable.
+
+    A create carries a **handle** the device made up; the server names the
+    record and returns both `id` and `temp_id`. Everything the device queued
+    against the handle must be rewritten to the returned `id`.
+
+    Polling is the backstop, not the mechanism: subscribe to the host's own
+    change notification and pull when told, on a slow timer otherwise.
+
+servers:
+  - url: https://your-app.example.com/sync
+    description: Prefix is configurable via sync.api.prefix
+
+security:
+  - hostAuth: []
+
+paths:
+  /push:
+    post:
+      summary: Submit one mutation
+      description: |
+        One mutation per request, in the device's own sequence order. A non-2xx
+        is never retried with a *different* mutation id; a `retry` is retried
+        with the *same* one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PushRequest' }
+      responses:
+        '200':
+          description: The engine reached a verdict. Read `status`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PushResponse' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /bootstrap:
+    post:
+      summary: Page a view's current contents
+      description: |
+        Call with no `token` to open. Repeat with `next_token` until it is null.
+        `cursor` is present only on the final page; save it after every record
+        on that page is durable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BootstrapRequest' }
+      responses:
+        '200':
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BootstrapResponse' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /delta:
+    post:
+      summary: Follow a view from a cursor
+      description: |
+        Loop while `has_more` is true, carrying the returned `cursor` each time.
+        A `reset_required` here means the cursor can no longer be trusted:
+        discard local state for the view and bootstrap again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeltaRequest' }
+      responses:
+        '200':
+          description: Commits since the cursor, projected into the view.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeltaResponse' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    hostAuth:
+      type: http
+      scheme: bearer
+      description: |
+        This package authenticates nothing. The host's own middleware decides who
+        is calling; whatever that is, use it here.
+
+  responses:
+    Error:
+      description: Refused. `retriable` says whether the same request may be sent again.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error, message, retriable]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - invalid_field_value
+            - invalid_cursor
+            - too_many_operations
+            - field_not_writable
+            - body_too_large
+            - unauthenticated
+            - forbidden
+            - unknown_type
+            - protocol_violation
+            - reset_required
+            - retry
+          description: |
+            Branch on this, never on the message.
+
+            `retry` — send the identical request again, same mutation id.
+            `reset_required` — this view's local state is void; see `reason`.
+            `protocol_violation` — terminal for this mutation id; never resend it.
+            everything else — fix the request; resending as-is will not help.
+        message: { type: string, description: 'Human-readable. Do not parse.' }
+        retriable: { type: boolean }
+        reason:
+          type: string
+          enum: [context_changed, cursor_ahead, bootstrap_token_unknown, history_pruned, bootstrap_session_expired]
+          description: Present on `reset_required` only.
+
+    FieldValue:
+      type: object
+      required: [present]
+      properties:
+        present:
+          type: boolean
+          description: |
+            False means the field has no value at all, which is distinct from a
+            value of null. `{"present": true, "value": null}` is a field set to
+            null; `{"present": false}` is a field that was never set or was unset.
+        value:
+          description: Any JSON value. An empty object and an empty array are different values.
+
+    Record:
+      type: object
+      required: [id, type, version, fields]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        version: { type: integer, description: 'Send this back as `base_version` on the next write.' }
+        fields:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/FieldValue' }
+
+    Context:
+      type: object
+      description: What a cursor is bound to. If the fingerprint changes, the cursor is void.
+      required: [space, view_id, filter_version, filter_signature, schema_version, epoch, fingerprint]
+      properties:
+        space: { type: string }
+        view_id: { type: string }
+        filter_version: { type: string }
+        filter_signature: { type: string }
+        schema_version: { type: string }
+        epoch: { type: string }
+        fingerprint: { type: string }
+
+    Cursor:
+      type: object
+      required: [position, context]
+      properties:
+        position: { type: integer, description: 'The commit sequence this reader has consumed up to.' }
+        context: { type: string, description: 'The context fingerprint. Send it back exactly.' }
+
+    Operation:
+      type: object
+      required: [field, op]
+      properties:
+        field: { type: string }
+        op:
+          type: string
+          enum: [set, unset]
+          description: |
+            `unset` removes the field. It is NOT the same as setting it to null:
+            `{"op":"set","value":null}` stores a null, `{"op":"unset"}` stores
+            nothing. Send at most one operation per field.
+        value:
+          description: Required for `set`, absent for `unset`. Any JSON value.
+
+    PushRequest:
+      type: object
+      required: [type, mutation_id, id, replica, sequence, kind, base_version]
+      properties:
+        type: { type: string, description: 'The entity type, as registered by the host.' }
+        scope:
+          type: [string, 'null']
+          description: |
+            A selector, not a tenant id. The server maps it through this caller's
+            own memberships; a scope it does not have is refused.
+        mutation_id:
+          type: string
+          description: |
+            Client-generated and globally unique. Re-sending the same id returns
+            the same answer and changes nothing - which is what makes a lost
+            response safe to retry.
+        id:
+          type: string
+          description: |
+            On `update`, `delete` and `resolve`: the record's real id.
+            On `create`: a handle the device made up. The server names the record
+            and returns both `id` and `temp_id`; rewrite anything still queued.
+        replica: { type: string, description: 'This device. One acknowledgement stream per replica.' }
+        sequence:
+          type: integer
+          description: |
+            This device's own counter, gapless and ascending per replica. Assign
+            it when SENDING, not when queueing: a mutation that never reaches the
+            server must not consume a number the server will wait for.
+        kind: { type: string, enum: [create, update, delete, resolve] }
+        base_version:
+          type: integer
+          description: |
+            The record version this write was made against. It is what conflict
+            detection compares; 0 for a create. Sending the current version means
+            "I have seen everything", so it cannot conflict.
+        expected_version:
+          type: integer
+          description: Optimistic concurrency. Refused with `precondition_failed` if the record has moved.
+        atomic:
+          type: boolean
+          default: true
+          description: False lets non-conflicting fields apply while conflicting ones are held.
+        depends_on:
+          type: string
+          description: An earlier mutation id of this same replica, for an offline write chain.
+        operations:
+          type: array
+          items: { $ref: '#/components/schemas/Operation' }
+        resolution:
+          type: object
+          description: Required when `kind` is `resolve`.
+          properties:
+            group_id: { type: string }
+            group_revision: { type: integer }
+            candidate_ids: { type: array, items: { type: string } }
+
+    PushResponse:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string, description: 'The name the record actually has.' }
+        temp_id: { type: string, description: 'Present when the server renamed a create''s handle.' }
+        status:
+          type: string
+          enum: [applied, partial, noop, conflict, rejected, validation_failed, precondition_failed, mutation_gap]
+          description: |
+            `applied` / `partial` / `noop` — it landed.
+            `conflict` — competing values were preserved; see `conflict_groups`.
+            `rejected` / `validation_failed` / `precondition_failed` — it did not land, and the user has to be told.
+            `mutation_gap` — the server has not seen everything before this; resume from `acknowledged_sequence` + 1.
+        record_version: { type: integer }
+        commit_sequence: { type: integer }
+        acknowledged_sequence: { type: integer, description: 'The highest sequence this replica has had accepted.' }
+        reason: { type: [string, 'null'] }
+        decisions:
+          type: object
+          additionalProperties: { type: string }
+          description: What the resolver decided, per field.
+        accepted_versions:
+          type: object
+          additionalProperties: { type: integer }
+        conflict_groups:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              field: { type: string }
+              revision: { type: integer }
+              candidate_ids: { type: array, items: { type: string } }
+              open: { type: boolean }
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              field_version: { type: integer }
+              effective_base: { type: integer }
+              current: { $ref: '#/components/schemas/FieldValue' }
+              current_hidden:
+                type: boolean
+                description: The row is outside this caller's view, so the canonical value is withheld.
+        precondition:
+          type: object
+          properties:
+            expected_version: { type: integer }
+            actual_version: { type: integer }
+        validation:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              field: { type: [string, 'null'] }
+
+    BootstrapRequest:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string }
+        scope: { type: [string, 'null'] }
+        page_size: { type: integer, description: 'Defaults to the host''s configured size, capped by max_page_size.' }
+        token: { type: string, description: 'The `next_token` of the previous page. Omit to open a new bootstrap.' }
+
+    BootstrapResponse:
+      type: object
+      required: [context, token, records, offset, next_token, complete]
+      properties:
+        context: { $ref: '#/components/schemas/Context' }
+        token: { type: string, description: 'The token that produced this page.' }
+        records:
+          type: array
+          items: { $ref: '#/components/schemas/Record' }
+        offset: { type: integer }
+        next_token: { type: [string, 'null'], description: 'Null on the last page.' }
+        cursor:
+          oneOf:
+            - { $ref: '#/components/schemas/Cursor' }
+            - { type: 'null' }
+          description: Present only on the final page. Save it once the page is durable.
+        complete: { type: boolean }
+
+    DeltaRequest:
+      type: object
+      required: [type, cursor]
+      properties:
+        type: { type: string }
+        scope: { type: [string, 'null'] }
+        cursor: { $ref: '#/components/schemas/Cursor' }
+        limit: { type: integer, description: 'Commits, not changes. Capped by max_commits.' }
+
+    DeltaResponse:
+      type: object
+      required: [context, commits, previous_cursor, cursor, has_more]
+      properties:
+        context: { $ref: '#/components/schemas/Context' }
+        commits:
+          type: array
+          items:
+            type: object
+            required: [sequence, changes]
+            properties:
+              sequence: { type: integer }
+              changes:
+                type: array
+                items:
+                  type: object
+                  required: [ordinal, kind, id, type]
+                  properties:
+                    ordinal: { type: integer }
+                    kind:
+                      type: string
+                      enum: [upsert, remove]
+                      description: |
+                        `remove` means it left this VIEW, which is not the same as
+                        being deleted: it may still exist and be visible elsewhere.
+                    id: { type: string }
+                    type: { type: string }
+                    version: { type: integer }
+                    record:
+                      oneOf:
+                        - { $ref: '#/components/schemas/Record' }
+                        - { type: 'null' }
+        previous_cursor: { $ref: '#/components/schemas/Cursor' }
+        cursor: { $ref: '#/components/schemas/Cursor' }
+        has_more: { type: boolean, description: 'Loop while true, carrying `cursor` each time.' }

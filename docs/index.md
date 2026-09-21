@@ -14,7 +14,9 @@ own database connections, a migration, and transaction control that composes wit
 It also serves the protocol: three JSON endpoints, off by default, and a model
 trait that turns an existing Eloquent model into a syncable type using the policy
 your application already has. See [Syncing a model](core-concepts/models.md) and
-[Transport](core-concepts/transport.md).
+[Transport](core-concepts/transport.md). The wire is also described in
+`openapi.yaml` at the package root, which is checked against the endpoints'
+actual answers by the test suite rather than maintained by hand.
 
 What it does not do is as important. There is no UI, no queue integration, and no
 authentication: the host says who is calling, and the package decides only what
