@@ -128,3 +128,36 @@ it('answers an error in the shape it describes', function () {
     expect(array_diff(array_keys($body), declaredOf('Error')))->toBe([]);
     expect(spec()['components']['schemas']['Error']['properties']['error']['enum'])->toContain($body['error']);
 });
+
+/**
+ * The brief an agent is handed names statuses, error codes and endpoints. It is
+ * prose, so nothing else would notice it going stale - and a stale brief is
+ * worse than none: it is confidently wrong, and an agent has no way to tell.
+ */
+it('hands an agent only things that still exist', function () {
+    $brief = file_get_contents(dirname(__DIR__, 2).'/docs/getting-started/for-an-agent.md');
+    $spec = spec();
+
+    $statuses = $spec['components']['schemas']['PushResponse']['properties']['status']['enum'];
+    $errors = $spec['components']['schemas']['Error']['properties']['error']['enum'];
+
+    // Every status the brief tells an agent to branch on.
+    foreach (['applied', 'partial', 'noop', 'conflict', 'rejected', 'validation_failed', 'precondition_failed', 'mutation_gap'] as $status) {
+        expect($brief)->toContain($status);
+        expect($statuses)->toContain($status);
+    }
+
+    expect($brief)->toContain('reset_required');
+    expect($errors)->toContain('reset_required');
+
+    // Every endpoint it names is one the description actually serves.
+    foreach (['/push', '/bootstrap', '/delta'] as $path) {
+        expect($brief)->toContain($path);
+        expect($spec['paths'])->toHaveKey($path);
+    }
+
+    // And the fields it tells an agent to send.
+    foreach (['mutation_id', 'base_version', 'acknowledged_sequence', 'temp_id', 'next_token', 'has_more'] as $field) {
+        expect($brief)->toContain($field);
+    }
+});
