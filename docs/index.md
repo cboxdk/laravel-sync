@@ -11,10 +11,14 @@ package gives it a home in a Laravel application: container bindings, one of you
 own database connections, a migration, and transaction control that composes with
 `DB::transaction()`.
 
-What it does not do is as important. There are no routes, no controllers and no
-wire format here: your application decides how a request becomes a mutation, who
-is allowed to send it, and which space it belongs to. There is no UI and no queue
-integration.
+It also serves the protocol: three JSON endpoints, off by default, and a model
+trait that turns an existing Eloquent model into a syncable type using the policy
+your application already has. See [Syncing a model](core-concepts/models.md) and
+[Transport](core-concepts/transport.md).
+
+What it does not do is as important. There is no UI, no queue integration, and no
+authentication: the host says who is calling, and the package decides only what
+that caller may then reach.
 
 ## Sections
 
