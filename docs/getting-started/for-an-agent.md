@@ -90,9 +90,12 @@ WHEN THE SERVER SAYS reset_required (409)
   bootstrap again from scratch. Do not retry the same cursor.
 
 STAYING CURRENT
-- Subscribe to the host's change notification if it offers one; it tells you a
-  space advanced and how far. When it fires, push then pull.
-- KEEP POLLING ANYWAY, on a slow timer. Notification delivery is at-most-once:
+- Polling is a complete strategy. A timer that pushes then pulls is correct on
+  its own, and is all you need unless latency matters. Start here.
+- If the host offers a change notification, subscribe to it as well: it tells
+  you a space advanced and how far, so you can sync immediately instead of
+  waiting for the timer.
+- KEEP THE TIMER even then, just slower. Notification delivery is at-most-once:
   a missed signal must never mean missed data. The signal makes you prompt; the
   cursor is what makes you correct.
 

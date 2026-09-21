@@ -18,6 +18,8 @@ use Cbox\Sync\Views\BootstrapSessions;
 use Cbox\Sync\Views\FrozenBootstrapSessions;
 use Cbox\Sync\Views\KeysetBootstrapSessions;
 use Cbox\Sync\Views\ViewSyncService;
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Broadcasting\Factory as BroadcastFactory;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
@@ -83,6 +85,7 @@ class SyncServiceProvider extends ServiceProvider
     {
         $this->app->register(Api\ApiServiceProvider::class);
         $this->registerWebhookDelivery();
+        $this->registerBroadcasting();
 
         if ($this->app->runningInConsole()) {
             $this->commands([Console\PruneSyncCommand::class]);
@@ -102,6 +105,37 @@ class SyncServiceProvider extends ServiceProvider
         $value = $this->setting($app, $key);
 
         return is_string($value) && $value !== '' ? $value : $fallback;
+    }
+
+    /**
+     * Broadcasts a change, when asked, on a channel nobody can join until the
+     * host has said who may.
+     *
+     * The channel name is the tenant boundary: a private channel per space is
+     * another way into the same data the endpoints guard, and one that bypasses
+     * them. So the channel is registered only once AuthorizesSpaceChannel is
+     * bound - without it, listening is impossible rather than open.
+     */
+    private function registerBroadcasting(): void
+    {
+        $enabled = $this->app->make(Repository::class)->get('sync.broadcast.enabled');
+        if (filter_var($enabled, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) !== true) {
+            return;
+        }
+
+        $this->app->make(Dispatcher::class)
+            ->listen(Events\SpaceAdvanced::class, Broadcasting\BroadcastSpaceAdvanced::class);
+
+        if (! $this->app->bound(Api\Contracts\AuthorizesSpaceChannel::class)) {
+            return;
+        }
+
+        $this->app->make(BroadcastFactory::class)->channel(
+            'sync.{space}',
+            fn (Authenticatable $user, string $space): bool => $this->app
+                ->make(Api\Contracts\AuthorizesSpaceChannel::class)
+                ->mayListen($user, $space),
+        );
     }
 
     /**

@@ -108,6 +108,30 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Broadcasting
+    |--------------------------------------------------------------------------
+    |
+    | Off by default, and that is a real choice rather than a cautious one: a
+    | client that polls is complete on its own. Broadcasting lowers latency from
+    | the poll interval to about nothing; it does not make polling wrong, and for
+    | plenty of applications the interval was never the problem.
+    |
+    | Which broadcaster is not this package's business - Laravel already
+    | abstracts Reverb, Pusher, Ably and the rest behind one config.
+    |
+    | The channel is private and named for the space, which makes the channel
+    | name the tenant boundary. It is not registered at all until you bind
+    | Api\Contracts\AuthorizesSpaceChannel, so nobody can subscribe until you
+    | have decided who may.
+    |
+    */
+
+    'broadcast' => [
+        'enabled' => env('SYNC_BROADCAST_ENABLED', false),
+    ],
+
     'webhooks' => [
         'url' => env('SYNC_WEBHOOK_URL'),
 

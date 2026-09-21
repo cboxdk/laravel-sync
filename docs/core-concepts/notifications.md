@@ -6,9 +6,13 @@ description: "A commit raises an event. Wire it to a broadcast or a webhook so d
 
 # Telling clients about a change
 
-A device can always find out by asking. Polling alone makes the interval a
-straight trade between how stale the data may be and how much load every idle
-device puts on the server, so the package announces a change instead.
+**Polling is a complete strategy.** A device that asks every minute is correct,
+and for plenty of applications the interval was never the problem. Nothing below
+is required.
+
+What a notification buys is latency: the gap between a change happening and a
+device knowing about it drops from the poll interval to about nothing. Whether
+that is worth a broadcaster is a product question, not a correctness one.
 
 ```php
 Event::listen(SpaceAdvanced::class, function (SpaceAdvanced $event) {
@@ -26,34 +30,52 @@ there, including the rows and fields a given reader is not allowed to see.
 The signal says *there is something new, up to here*. The reader then asks
 through `/delta`, which knows who it is.
 
-## Polling does not go away
+## Keep polling even with push
 
 Delivery is at-most-once and unordered, so a missed signal must never mean
-missed data. Keep a slow poll as the backstop: the signal makes sync prompt, the
-cursor is what makes it correct. Minutes instead of seconds is the point.
+missed data. If you add push, slow the poll down rather than removing it -
+minutes instead of seconds. The signal makes sync prompt; the cursor is what
+makes it correct, and that does not change.
 
 ## Broadcasting to web clients
 
-The usual answer for a browser. Put it on a **private** channel per space and
-authorize it the way you authorize everything else — the channel name is the
-space, so channel authorization is tenant authorization.
+Off by default. Turn it on and the package broadcasts on a private channel per
+space:
+
+```dotenv
+SYNC_BROADCAST_ENABLED=true
+```
+
+Which broadcaster is not this package's business. Laravel already abstracts
+Reverb, Pusher, Ably and the rest behind one config, so the event simply
+implements `ShouldBroadcast` and your `config/broadcasting.php` decides the
+rest. There is no driver setting here and there should not be one.
+
+**The channel name is the tenant boundary.** `private-sync.{space}` is another
+way into the same data the endpoints guard, and one that bypasses them — so the
+channel is not registered at all until you say who may listen:
 
 ```php
-class SpaceChanged implements ShouldBroadcast
+class TeamChannels implements AuthorizesSpaceChannel
 {
-    public function __construct(private SpaceAdvanced $event) {}
-
-    public function broadcastOn(): PrivateChannel
+    public function mayListen(Authenticatable $user, string $space): bool
     {
-        return new PrivateChannel('sync.'.$this->event->space);
-    }
-
-    public function broadcastWith(): array
-    {
-        return ['watermark' => $this->event->watermark];
+        return $this->teams->has($user->getAuthIdentifier(), $space);
     }
 }
 ```
+
+```php
+$this->app->bind(AuthorizesSpaceChannel::class, TeamChannels::class);
+```
+
+Without that binding nobody can subscribe, which is the safe direction to fail
+in. There is deliberately no default: a permissive one would be the worst thing
+this package could ship.
+
+The payload is `{"watermark": N}` on event `space.advanced`. A subscriber learns
+that there is something new and how far it goes; what it may actually read is
+decided when it asks.
 
 ## Webhooks for server-to-server
 
