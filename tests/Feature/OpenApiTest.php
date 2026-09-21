@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+use Cbox\Sync\Contracts\EntityValidator;
+use Cbox\Sync\Data\ValidationContext;
+use Cbox\Sync\Data\ValidationFailure;
+use Cbox\Sync\Data\ValidationResult;
 use Illuminate\Testing\TestResponse;
 use Symfony\Component\Yaml\Yaml;
 
@@ -160,4 +164,118 @@ it('hands an agent only things that still exist', function () {
     foreach (['mutation_id', 'base_version', 'acknowledged_sequence', 'temp_id', 'next_token', 'has_more'] as $field) {
         expect($brief)->toContain($field);
     }
+});
+
+/** @return list<string> Declared properties of an inline nested object. */
+function declaredNested(string $schema, string $property, bool $inItems = true): array
+{
+    $node = spec()['components']['schemas'][$schema]['properties'][$property];
+
+    return array_keys(($inItems ? $node['items'] : $node)['properties'] ?? []);
+}
+
+function pushAs(object $test, string $principal, array $mutation): TestResponse
+{
+    return $test->postJson('/sync/push', ['type' => 'tasks', 'scope' => 'team-1'] + $mutation, ['X-Test-Principal' => $principal]);
+}
+
+function seedTaskFor(object $test): string
+{
+    return pushAs($test, 'alice', [
+        'mutation_id' => 'seed', 'id' => 'handle', 'replica' => 'device-1', 'sequence' => 1,
+        'kind' => 'create', 'base_version' => 0,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'original'], ['field' => 'status', 'op' => 'set', 'value' => 'open']],
+    ])->assertOk()->json('id');
+}
+
+/**
+ * A conflict is the answer this package exists to give, and the one a client has
+ * the most work to do with. Describing it wrong is worse than not describing it.
+ */
+it('describes a conflict exactly as it answers one', function () {
+    $id = seedTaskFor($this);
+
+    pushAs($this, 'alice', [
+        'mutation_id' => 'a2', 'id' => $id, 'replica' => 'device-1', 'sequence' => 2,
+        'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'from alice']],
+    ])->assertOk();
+
+    $body = pushAs($this, 'bob', [
+        'mutation_id' => 'b1', 'id' => $id, 'replica' => 'device-2', 'sequence' => 1,
+        'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'from bob']],
+    ])->assertOk()->json();
+
+    expect($body['status'])->toBe('conflict');
+    expect(array_diff(array_keys($body), declaredOf('PushResponse')))->toBe([]);
+    expect(spec()['components']['schemas']['PushResponse']['properties']['status']['enum'])->toContain('conflict');
+
+    // The two nested shapes a client has to read to resolve anything.
+    expect($body['conflict_groups'])->not->toBeEmpty();
+    expect(array_diff(array_keys($body['conflict_groups'][0]), declaredNested('PushResponse', 'conflict_groups')))->toBe([]);
+
+    expect($body['conflicts'])->not->toBeEmpty();
+    expect(array_diff(array_keys($body['conflicts'][0]), declaredNested('PushResponse', 'conflicts')))->toBe([]);
+    expect(array_diff(array_keys($body['conflicts'][0]['current']), declaredOf('FieldValue')))->toBe([]);
+});
+
+/** A gap answers with far less than an applied push. The description allows that. */
+it('describes a mutation gap exactly as it answers one', function () {
+    $id = seedTaskFor($this);
+
+    $body = pushAs($this, 'alice', [
+        'mutation_id' => 'g1', 'id' => $id, 'replica' => 'device-9', 'sequence' => 5,
+        'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'x']],
+    ])->assertOk()->json();
+
+    expect($body['status'])->toBe('mutation_gap');
+    expect(array_diff(array_keys($body), declaredOf('PushResponse')))->toBe([]);
+
+    // The field the brief tells an agent to resume from has to actually be here.
+    expect($body)->toHaveKey('acknowledged_sequence');
+    expect($body['acknowledged_sequence'])->toBeInt();
+});
+
+it('describes a precondition failure exactly as it answers one', function () {
+    $id = seedTaskFor($this);
+
+    pushAs($this, 'alice', [
+        'mutation_id' => 'a2', 'id' => $id, 'replica' => 'device-1', 'sequence' => 2,
+        'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'moved on']],
+    ])->assertOk();
+
+    $body = pushAs($this, 'alice', [
+        'mutation_id' => 'p1', 'id' => $id, 'replica' => 'device-1', 'sequence' => 3,
+        'kind' => 'update', 'base_version' => 1, 'expected_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'too late']],
+    ])->assertOk()->json();
+
+    expect($body['status'])->toBe('precondition_failed');
+    expect(array_diff(array_keys($body), declaredOf('PushResponse')))->toBe([]);
+    expect(array_diff(array_keys($body['precondition']), declaredNested('PushResponse', 'precondition', inItems: false)))->toBe([]);
+    expect(array_diff(declaredNested('PushResponse', 'precondition', inItems: false), array_keys($body['precondition'])))->toBe([]);
+});
+
+it('describes a validation failure exactly as it answers one', function () {
+    app()->bind(EntityValidator::class, fn (): EntityValidator => new class implements EntityValidator
+    {
+        public function validate(ValidationContext $context): ValidationResult
+        {
+            return new ValidationResult([new ValidationFailure('title_reserved', 'That title is reserved.', 'title')]);
+        }
+    });
+
+    $body = pushAs($this, 'alice', [
+        'mutation_id' => 'v1', 'id' => 'handle', 'replica' => 'device-1', 'sequence' => 1,
+        'kind' => 'create', 'base_version' => 0,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'nope'], ['field' => 'status', 'op' => 'set', 'value' => 'open']],
+    ])->assertOk()->json();
+
+    expect($body['status'])->toBe('validation_failed');
+    expect(array_diff(array_keys($body), declaredOf('PushResponse')))->toBe([]);
+    expect($body['validation'])->not->toBeEmpty();
+    expect(array_diff(array_keys($body['validation'][0]), declaredNested('PushResponse', 'validation')))->toBe([]);
 });
