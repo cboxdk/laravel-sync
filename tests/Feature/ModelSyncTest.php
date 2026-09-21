@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Cbox\Sync\Laravel\Api\ApiServiceProvider;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Contracts\SyncPrincipals;
 use Cbox\Sync\Laravel\Api\GuardPrincipals;
@@ -12,6 +13,7 @@ use Cbox\Sync\Laravel\Syncable;
 use Cbox\Sync\Laravel\Tests\Fixtures\Member;
 use Cbox\Sync\Laravel\Tests\Fixtures\Note;
 use Cbox\Sync\Laravel\Tests\Fixtures\NotePolicy;
+use Cbox\Sync\Laravel\Tests\Fixtures\SecondNote;
 use Illuminate\Contracts\Auth\Factory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
@@ -169,4 +171,20 @@ it('refuses a model whose key the database hands out', function () {
         app(Illuminate\Contracts\Auth\Access\Gate::class),
         app(Factory::class),
     ))->toThrow(LogicException::class, 'auto-incrementing key');
+});
+
+/**
+ * Two registrations for one entity type means one is unreachable, and which one
+ * depends on array order. Two models sharing a table is the usual way in.
+ */
+it('refuses two syncable types claiming the same entity type', function () {
+    config()->set('sync.api.types', [Note::class, SecondNote::class]);
+    app()->forgetInstance(SyncableTypes::class);
+    (new ApiServiceProvider(app()))->register();
+
+    // Raised when the registry is first resolved rather than at boot, so it
+    // surfaces on the first sync request. Loud either way, which is the point:
+    // silently serving one of the two and never the other is what it did before.
+    expect(fn () => app(SyncableTypes::class)->registered())
+        ->toThrow(RuntimeException::class, 'unreachable');
 });

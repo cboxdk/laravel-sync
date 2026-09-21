@@ -8,6 +8,7 @@ use Cbox\Sync\Contracts\CommitObserver;
 use Cbox\Sync\Laravel\Events\SpaceAdvanced;
 use Cbox\Sync\ValueObjects\CommitSequence;
 use Illuminate\Contracts\Events\Dispatcher;
+use Psr\Log\LoggerInterface;
 
 /**
  * Turns the engine's commit signal into an ordinary Laravel event.
@@ -19,10 +20,26 @@ use Illuminate\Contracts\Events\Dispatcher;
  */
 class DispatchesSpaceAdvanced implements CommitObserver
 {
-    public function __construct(private readonly Dispatcher $events) {}
+    public function __construct(
+        private readonly Dispatcher $events,
+        private readonly LoggerInterface $log,
+    ) {}
 
     public function committed(string $space, CommitSequence $watermark): void
     {
-        $this->events->dispatch(new SpaceAdvanced($space, $watermark->value));
+        try {
+            $this->events->dispatch(new SpaceAdvanced($space, $watermark->value));
+        } catch (\Throwable $failure) {
+            // The engine will not let this reach the caller - the write already
+            // happened and failing the push would only make the client retry
+            // into its own receipt. That makes this the only place it can be
+            // seen at all, so a listener that throws has to leave a trace here
+            // or a silently broken notifier looks exactly like a quiet tenant.
+            $this->log->error('A sync change notification failed.', [
+                'space' => $space,
+                'watermark' => $watermark->value,
+                'exception' => $failure,
+            ]);
+        }
     }
 }

@@ -2,8 +2,10 @@
 
 declare(strict_types=1);
 
+use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Laravel\Events\SpaceAdvanced;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 
 function pushOne(object $test, string $id, int $sequence): void
 {
@@ -60,4 +62,36 @@ it('says nothing when a write is refused', function () {
     ], ['X-Test-Principal' => 'alice'])->assertStatus(403);
 
     Event::assertNotDispatched(SpaceAdvanced::class);
+});
+
+/**
+ * The engine will not let a listener's failure reach the caller - the write
+ * already happened, and failing the push would only make the client retry into
+ * its own receipt. That makes this the only place it can be seen at all, so a
+ * silently broken notifier would look exactly like a quiet tenant.
+ */
+it('leaves a trace when a listener fails', function () {
+    Log::spy();
+    Event::listen(SpaceAdvanced::class, function (): void {
+        throw new RuntimeException('listener is broken');
+    });
+
+    pushOne($this, 't1', 1);
+
+    Log::shouldHaveReceived('error')->once()->withArgs(
+        fn (string $message, array $context): bool => str_contains($message, 'notification failed')
+            && $context['space'] === 'team-1'
+            && $context['watermark'] === 1
+    );
+});
+
+/** And the write still stands, because it already had. */
+it('keeps the write when a listener fails', function () {
+    Event::listen(SpaceAdvanced::class, function (): void {
+        throw new RuntimeException('listener is broken');
+    });
+
+    pushOne($this, 't1', 1);
+
+    expect(app(Store::class)->watermark('team-1')->value)->toBe(1);
 });

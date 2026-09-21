@@ -100,9 +100,23 @@ class ApiServiceProvider extends ServiceProvider
             // A bare model class knows its own entity type, so listing it is
             // the whole registration: ['types' => [Task::class]].
             $entityType = is_string($key) && $key !== '' ? $key : self::entityTypeOf($class);
-            if ($entityType !== null) {
-                $map[$entityType] = $class;
+            if ($entityType === null) {
+                continue;
             }
+            // Two registrations for one entity type means one of them is
+            // unreachable, and which one depends on the order of an array - so
+            // the type nobody could serve would simply never answer, with
+            // nothing to find. Two models sharing a table is the usual way in.
+            if (isset($map[$entityType]) && $map[$entityType] !== $class) {
+                throw new \RuntimeException(sprintf(
+                    'Two syncable types claim the entity type "%s": %s and %s. One of them would be unreachable. '
+                    .'Give one an explicit key in sync.api.types, or set $syncType on the model.',
+                    $entityType,
+                    $map[$entityType],
+                    $class,
+                ));
+            }
+            $map[$entityType] = $class;
         }
 
         return $map;
