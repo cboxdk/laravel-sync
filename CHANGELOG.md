@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 - 2026-09-21
+
+### Added
+
+- **`php artisan sync:prune <space>`**, so retention is reachable at all. `retention.keep_commits` was documented, had an env var, and was read nowhere: there was no command, no scheduler, and no way for a host to drop history - a busy space filled the disk with no supported way to stop it. `--keep` overrides the configured window and `--pretend` reports what would go without dropping anything. Nothing runs on its own, because how much history a tenant still owes its slowest device is a question only the application can answer.
+
+  A space is named rather than discovered. The store deliberately cannot list its spaces - a tenant boundary is the host's to enumerate - and widening the contract to feed a command would be the tail wagging the dog.
+
+### Fixed
+
+- **`sync.bootstrap.page_size` was read nowhere.** An operator who set it to speed up a large bootstrap saw nothing change and had no error to find; the service used a literal buried in a private method. A client that asks for a size still gets it, bounded by `max_page_size`; the configured value is the default for one that asks for nothing.
+
+### Changed
+
+- Requires `cboxdk/sync` `^0.7` for `Store::prune()`.
+
 ## 0.4.0 - 2026-09-20
 
 ### Security (breaking)
