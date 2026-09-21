@@ -31,3 +31,20 @@ Nothing is pruned automatically. `keep_commits` is the window your own scheduled
 task should honour when it calls `prune()`. Keep enough history for your slowest
 client: a cursor below the horizon is told to re-bootstrap rather than silently
 skipping the commits it missed.
+
+## Retention
+
+Nothing is pruned automatically. The commit log is the only thing that grows
+without bound, and how much history a tenant still owes its slowest device is a
+question only the application can answer.
+
+```bash
+php artisan sync:prune team-1 team-2
+```
+
+`retention.keep_commits` is the default window; `--keep` overrides it and
+`--pretend` reports what would go without dropping anything. Schedule it.
+
+A device whose cursor falls below the new horizon is told to rebuild rather than
+served a gap, so prune past what every device has acknowledged - or accept that
+the slow ones re-bootstrap.

@@ -76,6 +76,7 @@ class SyncServiceProvider extends ServiceProvider
         $this->app->register(Api\ApiServiceProvider::class);
 
         if ($this->app->runningInConsole()) {
+            $this->commands([Console\PruneSyncCommand::class]);
             $this->publishes([__DIR__.'/../config/sync.php' => $this->app->configPath('sync.php')], 'sync-config');
             $this->publishes([__DIR__.'/../database/migrations' => $this->app->databasePath('migrations')], 'sync-migrations');
         }

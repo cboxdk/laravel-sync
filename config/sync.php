@@ -87,6 +87,9 @@ return [
     ],
 
     'retention' => [
+        // The default for `php artisan sync:prune <space>`. Nothing prunes on its
+        // own: how much history a tenant still owes its slowest device is a
+        // question only you can answer, so schedule the command.
         'keep_commits' => (int) env('SYNC_KEEP_COMMITS', 10_000),
     ],
 
