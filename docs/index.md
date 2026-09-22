@@ -20,7 +20,8 @@ actual answers by the test suite rather than maintained by hand.
 
 What it does not do is as important. There is no UI and no authentication: the
 host says who is calling, and the package decides only what that caller may then
-reach. (Webhook delivery runs on your queue; nothing else does.)
+reach. (Webhook delivery and broadcasts run on your queue: turning either on
+needs a worker.)
 
 ## Sections
 

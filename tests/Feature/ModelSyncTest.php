@@ -311,6 +311,17 @@ it('never syncs a hidden field, even when the model lists it', function () {
     expect($model->syncFields())->toBe(['title', 'status']);
 });
 
+it('refuses a model whose listed sync fields are all hidden', function () {
+    $model = new class extends Note
+    {
+        protected array $syncFields = ['body'];
+
+        protected $hidden = ['body'];
+    };
+
+    expect(fn () => $model->syncFields())->toThrow(LogicException::class, 'nothing to sync');
+});
+
 it('refuses to guess the fields of a model that declares none', function () {
     $model = new class extends Note
     {

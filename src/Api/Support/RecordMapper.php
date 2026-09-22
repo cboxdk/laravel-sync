@@ -22,7 +22,7 @@ class RecordMapper
 {
     /**
      * @param  list<string>  $readableFields
-     * @return array{id: string, type: string, version: int, fields: array<string, array{present: bool, value?: mixed}>}
+     * @return array{id: string, type: string, version: int, fields: array<string, array{present: bool, value?: mixed}>|\stdClass}
      */
     public static function toWire(EntityRecord $record, array $readableFields): array
     {
@@ -38,7 +38,8 @@ class RecordMapper
             'id' => $record->entity->id,
             'type' => $record->entity->type,
             'version' => $record->version->value,
-            'fields' => $fields,
+            // An object even when empty, as the description says.
+            'fields' => $fields === [] ? new \stdClass : $fields,
         ];
     }
 }

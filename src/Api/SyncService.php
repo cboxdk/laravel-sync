@@ -235,7 +235,9 @@ class SyncService implements SyncEndpoints
     {
         try {
             return $type->space($principal, $scope) === $space;
-        } catch (SyncRequestRejected) {
+        } catch (\Throwable) {
+            // A host's own refusal - whatever it throws - means not this space;
+            // the stored answer still goes back, only without disclosure.
             return false;
         }
     }
