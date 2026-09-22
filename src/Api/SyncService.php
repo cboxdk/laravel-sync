@@ -134,10 +134,14 @@ class SyncService implements SyncEndpoints
         $run = function () use ($apply, &$result): void {
             $result = $apply();
         };
-        if ($type instanceof PersistsRecords && $this->store instanceof IlluminateStore) {
-            $this->store->databaseConnection()->transaction($run);
-        } else {
-            $run();
+        try {
+            if ($type instanceof PersistsRecords && $this->store instanceof IlluminateStore) {
+                $this->store->databaseConnection()->transaction($run);
+            } else {
+                $run();
+            }
+        } catch (\PDOException $failure) {
+            throw self::unstorable($failure) ?? $failure;
         }
         if ($result === null) {
             throw new \LogicException('The sync transaction completed without a result.');
@@ -231,6 +235,26 @@ class SyncService implements SyncEndpoints
      * How the writer wants a conflict handled. Absent means the server's
      * resolver decides, which is what every client before this field did.
      */
+    /**
+     * A value the application's table refuses - too long, out of range, NULL
+     * in a NOT NULL column, a broken foreign key. The whole write was rolled
+     * back, and sending it again changes nothing, so the device is told it is
+     * final instead of retrying a 500 forever. What the database said stays in
+     * the server's log: it names tables and columns the caller need not know.
+     */
+    private static function unstorable(\PDOException $failure): ?SyncRequestRejected
+    {
+        $sqlState = $failure->errorInfo[0] ?? null;
+        $state = is_string($sqlState) ? $sqlState : (string) $failure->getCode();
+        $driverCode = $failure->errorInfo[1] ?? null;
+        if (! str_starts_with($state, '22') && ! str_starts_with($state, '23') && $driverCode !== 1364) {
+            return null;
+        }
+        report($failure);
+
+        return new SyncRequestRejected('The application could not store a value in this write', 'invalid_field_value');
+    }
+
     private static function onConflict(\stdClass $body): OnConflict
     {
         $value = Payload::optionalString($body, 'on_conflict');

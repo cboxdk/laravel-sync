@@ -6,6 +6,7 @@ use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\FieldOperation as Op;
 use Cbox\Sync\Engine;
 use Cbox\Sync\Enums\MutationStatus;
+use Cbox\Sync\Exceptions\TransientFailure;
 use Cbox\Sync\Laravel\IlluminateStore;
 use Cbox\Sync\ValueObjects\EntityKey;
 use Cbox\Sync\ValueObjects\Replica;
@@ -81,6 +82,44 @@ it('rolls the whole mutation back when the surrounding transaction fails', funct
     expect($this->syncStore()->record($entity)?->value('title')->value())->toBe('kept');
     expect($this->syncStore()->watermark('tenant-1')->value)->toBe($watermark);
     expect($this->syncStore()->receipt('a-one-1'))->toBeNull();
+});
+
+/**
+ * A deadlock inside the host's transaction kills that transaction and the
+ * savepoint with it. The store used to roll back to the vanished savepoint and
+ * leave Laravel's nesting counter wrong; now Laravel unwinds it and hands the
+ * host a DeadlockException its own DB::transaction() retries.
+ */
+it('hands a deadlock inside the host transaction to the host to retry', function () {
+    $entity = new EntityKey('tenant-1', 'notes', 'retried');
+    $attempts = 0;
+
+    DB::transaction(function () use ($entity, &$attempts): void {
+        $attempts++;
+        if ($attempts === 1) {
+            $this->syncStore()->transaction('tenant-1', function (): never {
+                $deadlock = new PDOException('Deadlock found when trying to get lock', 0);
+                $deadlock->errorInfo = ['40001', 1213, 'Deadlock found when trying to get lock'];
+
+                throw $deadlock;
+            });
+        }
+        $this->syncCreate($entity, [Op::set('title', 'second attempt')]);
+    }, attempts: 2);
+
+    expect($attempts)->toBe(2);
+    expect(DB::transactionLevel())->toBe(0);
+    expect($this->syncStore()->record($entity)?->value('title')->value())->toBe('second attempt');
+});
+
+it('reports a deadlock on its own transaction as worth retrying', function () {
+    expect(fn () => $this->syncStore()->transaction('tenant-1', function (): never {
+        $deadlock = new PDOException('Deadlock found when trying to get lock', 0);
+        $deadlock->errorInfo = ['40001', 1213, 'Deadlock found when trying to get lock'];
+
+        throw $deadlock;
+    }))->toThrow(TransientFailure::class);
+    expect(DB::transactionLevel())->toBe(0);
 });
 
 it('keeps spaces independent', function () {

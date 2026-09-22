@@ -4,22 +4,16 @@ declare(strict_types=1);
 
 namespace Cbox\Sync\Laravel;
 
-use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\AdapterContext;
 use Cbox\Sync\Data\FieldOperation;
 use Cbox\Sync\Data\Mutation;
-use Cbox\Sync\Data\MutationResult;
 use Cbox\Sync\Engine;
-use Cbox\Sync\Enums\MutationKind;
 use Cbox\Sync\Enums\MutationStatus;
 use Cbox\Sync\Enums\OnConflict;
-use Cbox\Sync\Exceptions\ProtocolException;
 use Cbox\Sync\Laravel\Contracts\SyncableModel;
 use Cbox\Sync\Laravel\Exceptions\SyncConflict;
 use Cbox\Sync\Laravel\Exceptions\SyncRejected;
 use Cbox\Sync\ValueObjects\EntityKey;
-use Cbox\Sync\ValueObjects\MutationSequence;
-use Cbox\Sync\ValueObjects\RecordVersion;
 use Cbox\Sync\ValueObjects\Replica;
 use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -43,18 +37,9 @@ use Illuminate\Routing\Route;
 class SyncRecorder
 {
     public function __construct(
-        private readonly Store $store,
         private readonly Engine $engine,
         private readonly AuthFactory $auth,
     ) {}
-
-    /**
-     * How many times a write that lost a race for the server's sequence is
-     * tried again. Every trusted write shares one replica stream, and the
-     * number is read before the engine takes the space lock, so two writers can
-     * pick the same one; the loser stored nothing and simply goes again.
-     */
-    private const ATTEMPTS = 3;
 
     /**
      * @param  list<string>  $changed  the fields this write set
@@ -96,98 +81,36 @@ class SyncRecorder
         $ifMatch = $concerned && ! $held ? $this->ifMatch() : null;
         $base = $concerned && ! $held ? $this->claimedBase() : null;
 
-        for ($attempt = 1; ; $attempt++) {
-            try {
-                $result = $this->attempt($entity, $deleting, $operations, $ifMatch, $base);
-            } catch (ProtocolException $collided) {
-                // Another trusted write took this sequence number between the
-                // read and the lock. Nothing was stored for this one.
-                if ($attempt >= self::ATTEMPTS) {
-                    throw $collided;
-                }
-
-                continue;
-            }
-            if ($result === null) {
-                return;
-            }
-
-            $status = $result->status;
-            // A write that named no version means "I know the current state".
-            // Refused anyway, the state moved between the read and the lock,
-            // and a fresh read settles it. Pull rather than preserve, so the
-            // race leaves no conflict group behind.
-            $raced = $status === MutationStatus::MutationGap
-                || ($ifMatch === null && $base === null && $status === MutationStatus::PullRequired);
-            if ($raced && $attempt < self::ATTEMPTS) {
-                continue;
-            }
-
-            match ($status) {
-                MutationStatus::Conflict, MutationStatus::PullRequired, MutationStatus::PreconditionFailed => throw SyncConflict::from($result),
-                MutationStatus::Rejected, MutationStatus::ValidationFailed, MutationStatus::MutationGap, MutationStatus::ReceiptPruned => throw SyncRejected::from($result),
-                default => null,
-            };
-            if ($concerned && ($ifMatch !== null || $base !== null)) {
-                $this->request()?->attributes->set($marker, true);
-            }
-
-            return;
-        }
-    }
-
-    /**
-     * @param  list<FieldOperation>  $operations
-     * @param  list<int>|null  $ifMatch  null when no precondition was asked for
-     */
-    private function attempt(EntityKey $entity, bool $deleting, array $operations, ?array $ifMatch, ?int $base): ?MutationResult
-    {
-        // The log decides whether this is a create, not the model: a row that
-        // predates sync - or was written around it - has no record yet.
-        $current = $this->store->record($entity);
-        if ($deleting && ($current === null || $current->deleted)) {
-            return null;
-        }
-        $kind = match (true) {
-            $deleting => MutationKind::Delete,
-            $current === null => MutationKind::Create,
-            default => MutationKind::Update,
-        };
-
-        $replica = new Replica('server');
-        $stored = $current?->version->value ?? 0;
-
-        // If-Match lists the versions the caller will accept; the write goes
-        // ahead only if the record is at one of them. A header that names no
-        // version it can be matched against fails rather than being ignored.
-        $expected = null;
-        if ($ifMatch !== null && $kind !== MutationKind::Create) {
-            $expected = in_array($stored, $ifMatch, true) ? $stored : ($ifMatch[0] ?? 0);
-        }
-
-        // A base version is what turns an ordinary write into a checked one.
-        // Without it the base is whatever is stored now - the truthful
-        // statement that this write knows the current state.
-        $baseVersion = $kind === MutationKind::Create ? 0 : ($expected ?? $base ?? $stored);
-
-        return $this->engine->process(
-            new Mutation(
-                'server-'.bin2hex(random_bytes(16)),
-                $entity,
-                $replica,
-                new MutationSequence($this->store->acknowledged($entity->space, $replica) + 1),
-                $kind,
-                new RecordVersion(min($baseVersion, $stored)),
-                $kind === MutationKind::Delete ? [] : $operations,
-                expectedVersion: $expected === null ? null : new RecordVersion($expected),
-            ),
+        // Create or update, the base and the stream position are all decided
+        // inside the space lock. Deciding them here raced every other save to
+        // the same tenant, and under MySQL's REPEATABLE READ a host
+        // transaction kept every retry reading the same stale position.
+        $result = $this->engine->recordTrusted(
+            $entity,
+            new Replica('server'),
+            $operations,
+            $deleting,
             new AdapterContext($this->actor()),
+            $ifMatch,
+            $base,
             // Never preserve a conflict from here. The table is being written
             // in the same transaction, and a request that lost is answered 409
             // with nothing kept - not with a candidate waiting in a group for a
             // choice nobody will be asked to make.
             OnConflict::Pull,
         );
+        if ($result === null) {
+            return;
+        }
+
+        match ($result->status) {
+            MutationStatus::Conflict, MutationStatus::PullRequired, MutationStatus::PreconditionFailed => throw SyncConflict::from($result),
+            MutationStatus::Rejected, MutationStatus::ValidationFailed, MutationStatus::MutationGap, MutationStatus::ReceiptPruned => throw SyncRejected::from($result),
+            default => null,
+        };
+        if ($concerned && ($ifMatch !== null || $base !== null)) {
+            $this->request()?->attributes->set($marker, true);
+        }
     }
 
     /** @param Model&SyncableModel $model */

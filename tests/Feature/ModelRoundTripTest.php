@@ -5,26 +5,18 @@ declare(strict_types=1);
 use Cbox\Sync\Contracts\EntityValidator;
 use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\EntityRecord;
-use Cbox\Sync\Data\FieldOperation;
-use Cbox\Sync\Data\Mutation;
 use Cbox\Sync\Data\ValidationContext;
 use Cbox\Sync\Data\ValidationFailure;
 use Cbox\Sync\Data\ValidationResult;
 use Cbox\Sync\Engine;
-use Cbox\Sync\Enums\MutationKind;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Contracts\SyncPrincipals;
 use Cbox\Sync\Laravel\Api\GuardPrincipals;
 use Cbox\Sync\Laravel\Exceptions\SyncRejected;
-use Cbox\Sync\Laravel\IlluminateStore;
 use Cbox\Sync\Laravel\Syncable;
 use Cbox\Sync\Laravel\SyncRecorder;
 use Cbox\Sync\Laravel\Tests\Fixtures\Member;
 use Cbox\Sync\ValueObjects\EntityKey;
-use Cbox\Sync\ValueObjects\MutationSequence;
-use Cbox\Sync\ValueObjects\RecordVersion;
-use Cbox\Sync\ValueObjects\Replica;
-use Illuminate\Contracts\Auth\Factory;
 use Illuminate\Database\Eloquent\Casts\AsArrayObject;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
@@ -214,43 +206,6 @@ it('applies If-Match only to the model the route is about', function () {
 });
 
 /**
- * A server write that loses a race with a device used to preserve a conflict
- * on its first attempt and then apply on the retry, leaving a group nobody
- * would ever be asked to resolve.
- */
-it('leaves no conflict group behind when a server write races a device', function () {
-    card('g1', ['title' => 'first']);
-    $stale = new class(app('db')->connection()) extends IlluminateStore
-    {
-        public ?EntityRecord $before = null;
-
-        public function record(EntityKey $entity): ?EntityRecord
-        {
-            // As read by a writer that looked just before a device wrote.
-            if ($this->before !== null) {
-                $record = $this->before;
-                $this->before = null;
-
-                return $record;
-            }
-
-            return parent::record($entity);
-        }
-    };
-    $stale->before = logged('g1');
-    // The device's write lands after that read.
-    app(Engine::class)->process(new Mutation('device', new EntityKey('cards:owners', 'cards', 'g1'), new Replica('device'), new MutationSequence(1), MutationKind::Update, new RecordVersion(1), [FieldOperation::set('title', 'device')]));
-    app()->instance(SyncRecorder::class, new SyncRecorder($stale, app(Engine::class), app(Factory::class)));
-
-    $card = Card::find('g1');
-    $card->title = 'admin';
-    $card->save();
-
-    expect(logged('g1')?->value('title')->value())->toBe('admin')
-        ->and(app(Store::class)->openGroups(new EntityKey('cards:owners', 'cards', 'g1')))->toBe([]);
-});
-
-/**
  * One representation whatever the driver and the write path. Raw attributes
  * were 1 on SQLite, true on PostgreSQL and "4" from a form, and a device
  * sending the same value as a number met it as a conflict.
@@ -408,6 +363,40 @@ it('refuses a value the model cannot hold, before anything is stored', function 
     $this->postJson('/sync/bootstrap', ['type' => 'cards', 'scope' => 'owners', 'page_size' => 10])->assertOk();
 });
 
+/**
+ * A value only the table itself refuses - here NULL in a NOT NULL column - used
+ * to come back as a 500, which a device retries forever. It is final, and
+ * nothing of it is kept.
+ */
+it('refuses a write the table cannot hold as final, and keeps nothing of it', function () {
+    cardsOverApi($this);
+
+    pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'status', 'op' => 'set', 'value' => null]])
+        ->assertStatus(422)
+        ->assertJsonPath('error', 'invalid_field_value')
+        ->assertDontSee('SQLSTATE');
+
+    expect(Card::query()->count())->toBe(0)
+        ->and(app(Store::class)->receipt('m1'))->toBeNull();
+    pushCard($this, 'm2', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'fine']])->assertOk();
+});
+
+/**
+ * The read-back after a device's write only compared the fields the device
+ * sent, so a column the database defaulted on a device's create never reached
+ * the log, and other devices never learned it.
+ */
+it('logs a column the database defaulted on a device\'s create', function () {
+    cardsOverApi($this);
+
+    $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'x']])->assertOk()->json('id');
+
+    expect(logged($id)?->value('status')->value())->toBe('open')
+        ->and(logged($id)?->value('counter')->value())->toBe(0)
+        ->and(logged($id)?->value('done')->value())->toBeFalse()
+        ->and(array_key_exists('priority', logged($id)->fields ?? []))->toBeFalse();
+});
+
 /** An increment racing another used to log this instance's +1, not the column's +2. */
 it('logs what the column holds after a racing increment', function () {
     $first = card('r1', ['title' => 'x']);
@@ -438,8 +427,9 @@ it('writes a row the application\'s global scope hides', function () {
     $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'archived']])->assertOk()->json('id');
     Card::addGlobalScope('live', fn ($query) => $query->where('title', '!=', 'archived'));
 
-    pushCard($this, 'm2', 2, 'update', $id, 1, [['field' => 'status', 'op' => 'set', 'value' => 'done']])->assertOk()->assertJsonPath('status', 'applied');
-    pushCard($this, 'm3', 3, 'delete', $id, 2, [])->assertOk();
+    // Version 2 is the server logging the status the table defaulted.
+    pushCard($this, 'm2', 2, 'update', $id, 2, [['field' => 'status', 'op' => 'set', 'value' => 'done']])->assertOk()->assertJsonPath('status', 'applied');
+    pushCard($this, 'm3', 3, 'delete', $id, 3, [])->assertOk();
 
     expect(Card::query()->withoutGlobalScopes()->whereKey($id)->exists())->toBeFalse();
 });

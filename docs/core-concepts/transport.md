@@ -169,6 +169,7 @@ a permission change does not orphan a client's unflushed queue.
 | 409 | `invalid_cursor` | bootstrap again |
 | 413 / 415 | `body_too_large`, `unsupported_media_type` | fix the request |
 | 422 | `invalid_request` | fix the request |
+| 422 | `invalid_field_value`, `too_many_operations` | stop; the write is final - a value the model or the table cannot hold is refused, and nothing of it is kept |
 | 503 | `retry` | retry **the same mutation id**, after `Retry-After` |
 
 The 503 is safe precisely because a repeated mutation id returns the stored

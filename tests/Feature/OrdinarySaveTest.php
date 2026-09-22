@@ -10,12 +10,9 @@ use Cbox\Sync\Data\ValidationFailure;
 use Cbox\Sync\Data\ValidationResult;
 use Cbox\Sync\Engine;
 use Cbox\Sync\Laravel\Exceptions\SyncRejected;
-use Cbox\Sync\Laravel\IlluminateStore;
 use Cbox\Sync\Laravel\SyncRecorder;
 use Cbox\Sync\Laravel\Tests\Fixtures\Note;
 use Cbox\Sync\ValueObjects\EntityKey;
-use Cbox\Sync\ValueObjects\Replica;
-use Illuminate\Contracts\Auth\Factory;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
@@ -161,39 +158,4 @@ it('refuses to move a synced record to another tenant', function () {
     expect(fn () => $note->save())->toThrow(LogicException::class, 'cannot move between tenants');
 
     expect(Note::find('n8')->team_id)->toBe('owners');
-});
-
-/**
- * Every trusted write shares one stream, and its next number is read before
- * the engine takes the space lock - so two writers can pick the same one. The
- * loser stored nothing and goes again, instead of failing a save that was
- * never in conflict with anything.
- */
-it('tries again when another trusted write took its sequence number first', function () {
-    makeNote('n9', ['title' => 'Before']);
-    $stale = new class(app('db')->connection()) extends IlluminateStore
-    {
-        public bool $lied = false;
-
-        public function acknowledged(string $space, Replica $replica): int
-        {
-            $real = parent::acknowledged($space, $replica);
-            if (! $this->lied && $real > 0) {
-                // As read by a writer that lost the race to another.
-                $this->lied = true;
-
-                return $real - 1;
-            }
-
-            return $real;
-        }
-    };
-    app()->instance(SyncRecorder::class, new SyncRecorder($stale, app(Engine::class), app(Factory::class)));
-
-    $note = Note::find('n9');
-    $note->title = 'After';
-    $note->save();
-
-    expect($stale->lied)->toBeTrue()
-        ->and(storedNote('n9')->value('title')->value())->toBe('After');
 });

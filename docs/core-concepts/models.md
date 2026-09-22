@@ -57,7 +57,12 @@ log holds the same value for a field whichever path wrote it. A value the model
 cannot hold, an unknown enum case say, is refused with `invalid_field_value`
 before anything is stored. What the application's own observers make of a write
 reaches the devices too: after the row is written it is read back, and any
-difference is recorded as the server's own write.
+difference in any synced field - including a column the database defaulted on a
+device's create - is recorded as the server's own write, one version later. A
+value only the table refuses (NULL in a NOT NULL column, a string too long, a
+broken foreign key) rolls the whole write back and is answered 422
+`invalid_field_value`; the database's own message goes to your log, not to the
+device.
 
 An accessor's presentation never reaches the log, a column the database defaulted
 is logged as the value it got, and a date keeps its day whatever the app

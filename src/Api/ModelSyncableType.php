@@ -236,9 +236,17 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             $stored = $this->prototype->newInstance();
             $stored->setRawAttributes($row->getAttributes(), true);
             $stored->exists = true;
+            // Every synced field, not only those this write named: a column
+            // the database defaulted on a device's create, or one an observer
+            // set, is as much the table's as the fields the device sent. A
+            // field the log has never held and the table holds nothing in
+            // agrees already.
             $drift = [];
-            foreach ($stored->syncValues(array_keys($attributes)) as $field => $value) {
-                if (in_array($field, $this->prototype->syncFields(), true) && ! FieldValue::of($value)->equals($record->value($field))) {
+            foreach ($stored->syncValues($this->prototype->syncFields()) as $field => $value) {
+                if ($value === null && ! array_key_exists($field, $record->fields)) {
+                    continue;
+                }
+                if (! FieldValue::of($value)->equals($record->value($field))) {
                     $drift[] = $field;
                 }
             }

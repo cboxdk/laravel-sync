@@ -309,3 +309,16 @@ it('describes a validation failure exactly as it answers one', function () {
     expect($body['validation'])->not->toBeEmpty();
     expect(array_diff(array_keys($body['validation'][0]), declaredNested('PushResponse', 'validation')))->toBe([]);
 });
+
+/**
+ * Every endpoint runs behind the same middleware and the same error mapping,
+ * so every one of them can answer with each of these. A client generated from
+ * the description used to treat a 401, a 404 or a 503 from bootstrap as an
+ * undocumented failure.
+ */
+it('declares every status an endpoint can answer with', function () {
+    foreach (spec()['paths'] as $path => $operations) {
+        expect(array_map('strval', array_keys($operations['post']['responses'])))
+            ->toBe(['200', '401', '403', '404', '409', '413', '415', '422', '503'], $path);
+    }
+});

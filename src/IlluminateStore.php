@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Cbox\Sync\Laravel;
 
+use Cbox\Sync\Exceptions\InvalidRequest;
+use Cbox\Sync\Exceptions\TransientFailure;
 use Cbox\Sync\Persistence\Pdo\PdoSchema;
 use Cbox\Sync\Persistence\Pdo\PdoStore;
 use Illuminate\Database\Connection;
@@ -47,34 +49,61 @@ class IlluminateStore extends PdoStore
     /** Inside the host's own transaction the isolation is the host's; see PdoLedger. */
     private bool $nested = false;
 
-    protected function begin(): void
+    private bool $active = false;
+
+    /**
+     * The whole transaction goes through Laravel's own transaction(), so the
+     * framework keeps its nesting counter right in every failure. Inside a
+     * host's transaction this runs as a savepoint; when the database kills
+     * that transaction for a deadlock the savepoint is gone with it, and only
+     * Laravel knows to unwind its counter and hand the host a DeadlockException
+     * it can retry - rolling back to the savepoint ourselves failed instead,
+     * and left the connection unusable for the rest of the request.
+     */
+    public function transaction(string $space, \Closure $callback): mixed
     {
-        $this->nested = $this->db->transactionLevel() > 0;
-        if (! $this->nested && $this->schema->driver === PdoSchema::MYSQL) {
+        if ($space === '') {
+            throw new InvalidRequest('Transaction space must not be empty');
+        }
+        if ($this->active) {
+            throw new TransientFailure('Nested or concurrent transaction is unsupported');
+        }
+        $this->ensureSpace($space);
+        $nested = $this->db->transactionLevel() > 0;
+        if (! $nested && $this->schema->driver === PdoSchema::MYSQL) {
             // Read committed, as PdoStore does for its own transactions: no
             // stale snapshot, no gap locks across spaces.
             $this->connection()->exec('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
         }
-        $this->db->beginTransaction();
-        if ($this->schema->driver === PdoSchema::SQLITE) {
-            // Laravel opens SQLite transactions deferred, which would let two
-            // readers race to the same commit sequence. Take the write lock now.
-            $this->connection()->exec('UPDATE sync_spaces SET commit_sequence = commit_sequence WHERE 1 = 0');
+        $this->nested = $nested;
+        $this->active = true;
+        try {
+            return $this->db->transaction(function () use ($space, $callback): mixed {
+                if ($this->schema->driver === PdoSchema::SQLITE) {
+                    // Laravel opens SQLite transactions deferred, which would let
+                    // two readers race to the same commit sequence. Take the
+                    // write lock now.
+                    $this->connection()->exec('UPDATE sync_spaces SET commit_sequence = commit_sequence WHERE 1 = 0');
+                }
+
+                return $this->underLock($space, $callback);
+            });
+        } catch (\PDOException $failure) {
+            // Inside the host's transaction the deadlock is the host's to
+            // retry, as the DeadlockException Laravel raised. On our own, the
+            // same mutation may simply be sent again.
+            if (! $nested && self::isContention($failure)) {
+                throw new TransientFailure('The space is busy; retry the same mutation', previous: $failure);
+            }
+
+            throw $failure;
+        } finally {
+            $this->active = false;
         }
     }
 
     protected function needsLockingReads(): bool
     {
         return $this->nested;
-    }
-
-    protected function commit(): void
-    {
-        $this->db->commit();
-    }
-
-    protected function rollback(): void
-    {
-        $this->db->rollBack();
     }
 }

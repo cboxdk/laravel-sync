@@ -14,7 +14,11 @@ Requires `cboxdk/sync` 0.9.
 - **A conflict or a refusal no longer leaves the losing value in your table.** `save()`, `delete()`, `increment()` and `decrement()` share one transaction with their recording, so a 409, a 412 or a 422 rolls the row back and a refused create leaves no row. An update carries only this save's changes; a reused instance used to push stale attributes over newer ones.
 - **Every outcome is handled.** A validation failure or rejection raises `SyncRejected` (422) instead of returning quietly.
 - **Values round-trip exactly, in one form on every driver.** Booleans, integers and decimals travel typed rather than as whatever the driver or a form handed over; dates keep their day in any timezone and a device may send ISO 8601; an accessor's presentation stays out; a column the database defaulted is logged as its value rather than as null (which broke every later push to a NOT NULL column); JSON columns, including `AsArrayObject` and `AsCollection`, travel as the JSON they hold. **Breaking:** the date wire format is the model's storage format, not ISO 8601. Encrypted columns are no longer synced.
-- A server write that loses a race no longer leaves a conflict group behind.
+- **A save is numbered, versioned and given its base inside the space lock**, so a save racing another writer is neither refused as `sequence_behind` (MySQL, inside the application's transaction) nor left as a conflict group.
+- **A value only the table refuses** - NULL in a NOT NULL column, too long, a broken foreign key - is answered 422 `invalid_field_value` and nothing of it is kept, instead of a 500 the device retried for ever.
+- **Every synced field is read back after a device's write**, so a column the database defaulted on a device's create reaches the other devices.
+- **A deadlock inside the application's transaction is the application's to retry**: the store runs through Laravel's own `transaction()`, which unwinds its nesting and raises `DeadlockException`. Rolling back to the vanished savepoint used to leave the connection unusable for the rest of the request.
+- The first two writes to a new tenant at the same moment no longer fail on PostgreSQL.
 - **Policies see the real row**, with the synced values laid over it, instead of a model with every non-synced attribute null.
 - **A device's values are put through the model before they are logged**, so the log holds what a save on the server would: typed, through mutators, dates with their offset honoured. A value the model cannot hold is refused with `invalid_field_value`; one bad enum used to be stored and then break every bootstrap in the tenant. What the application's own observers make of a write, and what a racing increment leaves in the column, reach the devices too.
 - On MySQL the package's own transactions run at READ COMMITTED, so writers in different tenants no longer deadlock on the log's indexes; the docs recommend the same `isolation_level` for the connection, since model saves run in the application's transaction.
@@ -37,6 +41,7 @@ Requires `cboxdk/sync` 0.9.
 - A change is announced only after the outermost transaction commits, and a failing listener is logged rather than thrown out of the host's transaction.
 - A webhook is never sent without its connection pinned to the address the SSRF guard validated; `ext-curl` is required for webhook delivery.
 - Every identifier on the wire is bounded.
+- `openapi.yaml` declares every status each endpoint can answer with: 401, 404, 413, 415 and 503 were missing from some.
 
 ### Fixed - CI
 
