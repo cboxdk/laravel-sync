@@ -28,7 +28,9 @@ Requires `cboxdk/sync` 0.9.
 - A save or delete an observer vetoes during a device's write is answered 403 `forbidden`, final, instead of a 500 retried for ever.
 - A principal with a `binding` keeps the current-state rule through the binding, so deletes and rows moving to another owner reach its devices.
 - A precondition met in a transaction that rolled back is forgotten under Octane too - the transaction listeners read the current request rather than looking for the recorder in the application container.
-- The space name is checked before its row is created, and the table-refusal mapping recognises prefixed and schema-qualified table names.
+- The space name is checked before its row is created, and the table-refusal mapping names the table the way the connection's grammar does - prefix, schema and all.
+- A precondition is forgotten when a new transaction begins at its level too, so Laravel's own retry after a failed COMMIT - which fires no rolled-back event - meets `If-Match` again.
+- A device's update is put through the model only against the row in the caller's tenant; a row with the same key in another tenant used to be probed, and its columns showed in the answer. A value the model refuses no longer stands in the way of the engine answering a position the stream already used.
 - **A deadlock inside the application's transaction is the application's to retry**: the store runs through Laravel's own `transaction()`, which unwinds its nesting and raises `DeadlockException`. Rolling back to the vanished savepoint used to leave the connection unusable for the rest of the request.
 - The first two writes to a new tenant at the same moment no longer fail on PostgreSQL.
 - **Policies see the real row**, with the synced values laid over it, instead of a model with every non-synced attribute null.

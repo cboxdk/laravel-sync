@@ -240,6 +240,25 @@ class SyncRecorder
         }
     }
 
+    /**
+     * A transaction began at this level, so whatever last lived at it ended -
+     * whether or not anything said so. A COMMIT that fails on a concurrency
+     * error is rolled back and retried by Laravel without a rolled-back event,
+     * and the retry skipped the precondition its first attempt had met.
+     */
+    public static function began(?Request $request, ConnectionInterface $connection): void
+    {
+        if ($request === null || ! $connection instanceof Connection) {
+            return;
+        }
+        $level = $connection->transactionLevel();
+        foreach ($request->attributes->all() as $key => $held) {
+            if (str_starts_with($key, 'sync.precondition_held.') && is_array($held) && ($held[0] ?? null) === $connection->getName() && ($held[1] ?? 0) >= $level) {
+                $request->attributes->remove($key);
+            }
+        }
+    }
+
     /** Whether this is the model the current route is about. */
     private function isRouteModel(Model $model): bool
     {

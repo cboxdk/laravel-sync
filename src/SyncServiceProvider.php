@@ -24,6 +24,7 @@ use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Http\Request;
@@ -153,6 +154,7 @@ class SyncServiceProvider extends ServiceProvider
         $events = $this->app->make(Dispatcher::class);
         $events->listen(TransactionCommitted::class, static fn (TransactionCommitted $event) => SyncRecorder::settle(self::currentRequest(), $event->connection, keep: true));
         $events->listen(TransactionRolledBack::class, static fn (TransactionRolledBack $event) => SyncRecorder::settle(self::currentRequest(), $event->connection, keep: false));
+        $events->listen(TransactionBeginning::class, static fn (TransactionBeginning $event) => SyncRecorder::began(self::currentRequest(), $event->connection));
     }
 
     /** The request being handled now - the sandbox's own under Octane. */

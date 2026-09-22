@@ -86,8 +86,18 @@ class SyncService implements SyncEndpoints
             $this->setting('api.max_operations', 64),
         );
 
+        $used = $mutation->sequence->value <= $this->store->acknowledged($space, $mutation->replica);
         if ($type instanceof NormalizesValues) {
-            $mutation = $type->normalize($mutation);
+            try {
+                $mutation = $type->normalize($mutation);
+            } catch (SyncRequestRejected $refused) {
+                // A used position is the engine's to answer - receipt_pruned,
+                // sequence_behind - and a value the model refuses today must
+                // not stand in the way of the device learning where it is.
+                if (! $used) {
+                    throw $refused;
+                }
+            }
         }
 
         // Before the engine, always. A mutation id that reaches it is
@@ -99,7 +109,6 @@ class SyncService implements SyncEndpoints
         // pruned, a writer that fell behind - and only its answer tells the
         // device where to go on. Refused here by a rule that changed since, the
         // device never learned it, and its next write reused the position.
-        $used = $mutation->sequence->value <= $this->store->acknowledged($space, $mutation->replica);
         if (! $used && ! $type->mayWrite($principal, $this->store->record($mutation->entity), $mutation->kind)) {
             throw SyncRequestRejected::forbidden();
         }

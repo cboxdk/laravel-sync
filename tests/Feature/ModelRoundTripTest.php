@@ -778,3 +778,72 @@ it('forgets a precondition met in a rolled-back transaction, whatever container 
 
     expect($request->attributes->has('sync.precondition_held.'.Card::class.':x'))->toBeFalse();
 });
+
+/**
+ * A COMMIT that fails on a concurrency error is rolled back and retried by
+ * Laravel without a rolled-back event, and the retry skipped the If-Match its
+ * first attempt had met. A transaction beginning at a level ends whatever
+ * lived there before.
+ */
+it('forgets a precondition when a new transaction begins at its level', function () {
+    $request = request();
+    $request->attributes->set('sync.precondition_held.'.Card::class.':x', ['sync-testing', 1]);
+
+    DB::connection('sync-testing')->beginTransaction();
+    $forgotten = ! $request->attributes->has('sync.precondition_held.'.Card::class.':x');
+    DB::connection('sync-testing')->rollBack();
+
+    expect($forgotten)->toBeTrue();
+});
+
+/**
+ * A device's value was put through the model on a row found by key alone -
+ * another tenant's row with that key - and what its mutator made of that
+ * tenant's columns showed in the answer.
+ */
+it('normalizes an update only against a row in the caller\'s own tenant', function () {
+    cardsOverApi($this);
+    $model = new class extends Card
+    {
+        protected function title(): Attribute
+        {
+            return Attribute::make(set: function (?string $value, array $attributes): ?string {
+                if (($attributes['status'] ?? null) === 'secret') {
+                    throw new InvalidArgumentException('no');
+                }
+
+                return $value;
+            });
+        }
+    };
+    config()->set('sync.api.types', [$model::class]);
+    app()->forgetInstance(SyncableTypes::class);
+    Gate::policy($model::class, AllowCards::class);
+    Card::withoutSyncing(fn () => (new Card)->forceFill(['id' => 'theirs', 'team_id' => 'others', 'status' => 'secret'])->save());
+
+    pushCard($this, 'm1', 1, 'update', 'theirs', 0, [['field' => 'title', 'op' => 'set', 'value' => 'probe']])
+        ->assertOk()->assertJsonPath('reason', 'entity_not_found');
+});
+
+/** A schema-qualified table was never recognised, so a value it refused came back a 500 the device retried for ever. */
+it('recognises the table in a schema-qualified statement', function () {
+    if (config('database.connections.sync-testing.driver') !== 'sqlite') {
+        $this->markTestSkipped('SQLite names its schema "main".');
+    }
+    cardsOverApi($this);
+    $model = new class extends Card
+    {
+        protected $table = 'main.cards';
+
+        public function syncEntityType(): string
+        {
+            return 'cards';
+        }
+    };
+    config()->set('sync.api.types', [$model::class]);
+    app()->forgetInstance(SyncableTypes::class);
+    Gate::policy($model::class, AllowCards::class);
+
+    pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'status', 'op' => 'set', 'value' => null]])
+        ->assertStatus(422)->assertJsonPath('error', 'invalid_field_value');
+});

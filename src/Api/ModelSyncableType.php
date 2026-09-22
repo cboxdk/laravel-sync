@@ -285,8 +285,17 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
         }
         // For an update, through the row as it stands: a mutator reading
         // another column saw null there, and stored what that made of it.
-        $current = $mutation->kind === MutationKind::Create ? null
-            : ($this->model)::query()->withoutGlobalScopes()->whereKey($mutation->entity->id)->first();
+        $current = null;
+        if ($mutation->kind !== MutationKind::Create) {
+            // In this tenant only: a row with this key in another one is not
+            // this record, and its columns are none of this caller's business.
+            $query = ($this->model)::query()->withoutGlobalScopes()->setEagerLoads([])->whereKey($mutation->entity->id);
+            $column = $this->prototype->syncScopeColumn();
+            if ($column !== null) {
+                $query->where($column, $this->scopeOf($mutation->entity->space));
+            }
+            $current = $query->first();
+        }
         try {
             $normalized = $this->prototype->syncNormalize($values, $current);
         } catch (\InvalidArgumentException $invalid) {
@@ -314,10 +323,11 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
      */
     private function unstorable(QueryException $failure, Model $row): ?SyncRequestRejected
     {
-        // The table as the SQL names it: with the connection's prefix, and
-        // possibly schema-qualified.
-        $table = preg_quote($row->getConnection()->getTablePrefix().$row->getTable(), '/');
-        if (preg_match('/^\s*(insert\s+into|update)\s+(?:[`"\[]?\w+[`"\]]?\.)?[`"\[]?'.$table.'[`"\]]?[\s(]/i', $failure->getSql()) !== 1) {
+        // The table as the connection's own grammar names it - prefix, schema
+        // and all - compared without its quoting.
+        $unquote = static fn (string $sql): string => strtolower((string) preg_replace('/[`"\[\]]/', '', $sql));
+        $table = preg_quote($unquote($row->getConnection()->getQueryGrammar()->wrapTable($row->getTable())), '/');
+        if (preg_match('/^\s*(insert\s+into|update)\s+'.$table.'[\s(]/', $unquote($failure->getSql())) !== 1) {
             return null;
         }
         $sqlState = $failure->errorInfo[0] ?? null;
