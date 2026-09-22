@@ -14,8 +14,13 @@ class Note extends Model
 ```
 
 ```php
-// config/sync.php
-'types' => [Note::class],
+// config/sync.php - the keys you change; the rest keep their defaults
+return [
+    'api' => [
+        'enabled' => true,
+        'types' => [Note::class],
+    ],
+];
 ```
 
 That is the registration. Everything else is read off the model the way the rest
@@ -75,9 +80,14 @@ names a row on insert. Registering such a model is refused by name rather than
 failing later as a constraint violation.
 
 ```php
-public $incrementing = false;
+class Note extends Model
+{
+    use Syncable;
 
-protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+}
 ```
 
 The name is a UUID (version 8, derived from the mutation), so a `uuid` column or

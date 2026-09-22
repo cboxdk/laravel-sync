@@ -279,6 +279,8 @@ trait Syncable
     /** A property the host declared on the model, or null when it did not. */
     private function syncDeclared(string $name): mixed
     {
-        return property_exists($this, $name) ? $this->{$name} : null;
+        // get_object_vars from inside the class sees protected properties, and
+        // names the property without a variable-variable lookup.
+        return get_object_vars($this)[$name] ?? null;
     }
 }

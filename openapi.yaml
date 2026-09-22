@@ -132,6 +132,7 @@ components:
             - too_many_operations
             - field_not_writable
             - body_too_large
+            - unsupported_media_type
             - unauthenticated
             - forbidden
             - unknown_type

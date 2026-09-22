@@ -55,12 +55,14 @@ class TaskType implements SyncableType
 ```
 
 ```php
-// config/sync.php
-'api' => [
-    'enabled' => true,
-    'middleware' => ['api', 'auth:sanctum'],
-    'types' => ['tasks' => TaskType::class],
-],
+// config/sync.php - the keys you change; the rest keep their defaults
+return [
+    'api' => [
+        'enabled' => true,
+        'middleware' => ['api', 'auth:sanctum'],
+        'types' => ['tasks' => TaskType::class],
+    ],
+];
 ```
 
 A type that is not listed is refused with 404. A type nobody declared is a type

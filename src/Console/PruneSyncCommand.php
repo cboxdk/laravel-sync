@@ -50,7 +50,7 @@ class PruneSyncCommand extends Command
             }
 
             $dropping = $horizon - $retained;
-            if ($this->option('pretend')) {
+            if ($this->option('pretend') === true) {
                 $this->line(sprintf('%s: would drop %d commit(s), keeping from %d', $space, $dropping, $horizon));
 
                 continue;

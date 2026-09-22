@@ -301,14 +301,10 @@ class ModelSyncableType implements PersistsRecords, SyncableType
     {
         $user = $this->auth->guard()->user();
         $identifier = $user?->getAuthIdentifier();
-        if (! is_string($identifier) && ! is_int($identifier)) {
-            throw SyncRequestRejected::forbidden();
-        }
-        if ((string) $identifier !== $principal->id) {
+        if ($user === null || (! is_string($identifier) && ! is_int($identifier)) || (string) $identifier !== $principal->id) {
             throw SyncRequestRejected::forbidden();
         }
 
-        /** @var Authenticatable $user */
         return $user;
     }
 }
