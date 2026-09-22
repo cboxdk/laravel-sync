@@ -76,13 +76,28 @@ it('applies a versioned patch when nothing moved underneath it', function () {
     expect(Note::find('n3')->title)->toBe('Mine');
 });
 
-/** The HTTP-native spelling of the same thing. */
-it('accepts If-Match as the version', function () {
+/**
+ * If-Match is what HTTP says it is: a precondition on the whole record. A
+ * client that sends an ETag back is asking "only if nothing changed", and gets
+ * 412 when something did - even a field it did not touch.
+ */
+it('treats If-Match as a precondition on the whole record', function () {
     seedNote('n4');
-    tap(Note::find('n4'), fn (Note $note) => $note->update(['title' => 'Theirs']));
+    tap(Note::find('n4'), fn (Note $note) => $note->update(['status' => 'done']));
 
     $this->patchJson('/api/notes/n4', ['title' => 'Mine'], ['If-Match' => '"1"'])
-        ->assertStatus(409);
+        ->assertStatus(412)
+        ->assertJsonPath('version', 2);
+
+    expect(Note::find('n4')->title)->toBe('Original');
+});
+
+it('lets an If-Match write through when the record has not moved', function () {
+    seedNote('n7');
+
+    $this->patchJson('/api/notes/n7', ['title' => 'Mine'], ['If-Match' => 'W/"1"'])->assertOk();
+
+    expect(Note::find('n7')->title)->toBe('Mine');
 });
 
 it('leaves two writers to different fields alone', function () {

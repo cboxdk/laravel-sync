@@ -110,20 +110,33 @@ Route::patch('/api/notes/{note}', function (Note $note) {
 ```
 
 A client that knows nothing about versions gets exactly what it always got. A
-client that sends the version it was looking at gets its write checked against
-that version:
+client that sends a version gets one of two checks, and which one is its choice:
+
+```http
+PATCH /api/notes/n1
+Content-Type: application/json
+
+{"title": "Mine", "base_version": 7}
+```
+
+`base_version` is **field-level**: the write merges unless someone else changed
+one of the same fields since version 7. Edits to other fields go through. This
+is what a sync-aware client wants.
 
 ```http
 PATCH /api/notes/n1
 If-Match: "7"
-
-{"title": "Mine"}
 ```
 
-or `base_version` in the body. The check runs **before** the row is written. A
-write that lost the race raises `SyncConflict`, which Laravel renders as **409**
-carrying what the record says now - and your table still holds the winning
-value, not the one that lost:
+`If-Match` is what HTTP says it is - a precondition on the **whole** record. If
+anything changed since version 7, even a field this write does not touch, the
+answer is **412** and nothing is written. This is what a REST client that sends
+an ETag back expects.
+
+Both checks run **before** the row is written. A write that lost raises
+`SyncConflict`, which Laravel renders as **409** (or 412) carrying what the
+record says now - and your table still holds the winning value, not the one
+that lost:
 
 ```json
 {

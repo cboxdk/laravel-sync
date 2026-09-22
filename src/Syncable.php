@@ -189,16 +189,21 @@ trait Syncable
      */
     public function syncFields(): array
     {
+        // The tenant is never a field. It is the space the record lives in; a
+        // field for it would let a client write a tenant id into the log that
+        // disagrees with where the record actually is.
+        $tenant = $this->syncScopeColumn();
+
         $declared = $this->syncDeclared('syncFields');
         if (is_array($declared) && $declared !== []) {
-            return array_values(array_filter($declared, is_string(...)));
+            return array_values(array_diff(array_filter($declared, is_string(...)), [$tenant]));
         }
 
         // Fillable is the host's own statement of what a request may set, which
         // is the same question this is asking. Hidden is its statement of what
         // a response must never show, so a hidden fillable field is not synced:
         // syncing it would put it in every device's database.
-        $fillable = array_values(array_diff($this->getFillable(), $this->getHidden()));
+        $fillable = array_values(array_diff($this->getFillable(), $this->getHidden(), [$tenant]));
         if ($fillable !== []) {
             return $fillable;
         }

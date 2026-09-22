@@ -81,10 +81,11 @@ class SyncRecorder
             $operations[] = FieldOperation::set($field, $value);
         }
 
-        $claimed = $this->claimedBase();
+        $expected = $this->expectedVersion();
+        $claimed = $expected ?? $this->claimedBase();
         for ($attempt = 1; ; $attempt++) {
             try {
-                $result = $this->attempt($entity, $deleting, $operations, $claimed);
+                $result = $this->attempt($entity, $deleting, $operations, $claimed, $expected);
             } catch (ProtocolException $collided) {
                 // Another trusted write took this sequence number between the
                 // read and the lock. Nothing was stored for this one.
@@ -119,7 +120,7 @@ class SyncRecorder
     }
 
     /** @param list<FieldOperation> $operations */
-    private function attempt(EntityKey $entity, bool $deleting, array $operations, ?int $claimed): ?MutationResult
+    private function attempt(EntityKey $entity, bool $deleting, array $operations, ?int $claimed, ?int $expected): ?MutationResult
     {
         // The log decides whether this is a create, not the model: a row that
         // predates sync - or was written around it - has no record yet.
@@ -151,6 +152,7 @@ class SyncRecorder
                 $kind,
                 new RecordVersion($base),
                 $kind === MutationKind::Delete ? [] : $operations,
+                expectedVersion: $kind === MutationKind::Create || $expected === null ? null : new RecordVersion($expected),
             ),
             new AdapterContext($this->actor()),
         );
@@ -179,26 +181,33 @@ class SyncRecorder
     }
 
     /**
-     * The version the caller says it was looking at, if it said.
+     * If-Match, as HTTP means it: the write happens only if the record is still
+     * at this version, otherwise 412. It is the whole-record precondition a
+     * REST client asks for when it sends an ETag back - not a merge.
+     */
+    private function expectedVersion(): ?int
+    {
+        $etag = $this->request()?->headers->get('If-Match');
+        if (! is_string($etag)) {
+            return null;
+        }
+        $version = trim(str_starts_with($etag, 'W/') ? substr($etag, 2) : $etag, '"');
+
+        return ctype_digit($version) ? (int) $version : null;
+    }
+
+    /**
+     * The version the caller says it was looking at, sent as base_version.
      *
      * Read off the request rather than asked for as an argument, so an existing
      * controller keeps its shape: a client that knows about versions sends one
-     * and gets conflict detection, and one that does not gets the ordinary
-     * last-write behaviour it has always had.
+     * and gets field-level conflict detection - edits to fields nobody else
+     * touched still merge - and one that does not gets the ordinary last-write
+     * behaviour it has always had.
      */
     private function claimedBase(): ?int
     {
-        $request = $this->request();
-        if ($request === null) {
-            return null;
-        }
-
-        $etag = $request->headers->get('If-Match');
-        if (is_string($etag) && ctype_digit(trim($etag, '"'))) {
-            return (int) trim($etag, '"');
-        }
-
-        $body = $request->input('base_version');
+        $body = $this->request()?->input('base_version');
 
         return is_int($body) || (is_string($body) && ctype_digit($body)) ? (int) $body : null;
     }
