@@ -9,6 +9,7 @@ use Cbox\Sync\Enums\MutationKind;
 use Cbox\Sync\Laravel\Api\Contracts\PersistsRecords;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
 use Cbox\Sync\Laravel\Api\Exceptions\SyncRequestRejected;
+use Cbox\Sync\Laravel\Api\Support\PolicyView;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\Laravel\Contracts\SyncableModel;
 use Cbox\Sync\Laravel\Syncable;
@@ -94,9 +95,27 @@ class ModelSyncableType implements PersistsRecords, SyncableType
         return $this->entityType().':'.$scope;
     }
 
+    /**
+     * Every live row of the type in the tenant - narrowed by the policy's
+     * `view` rule when it has one, so a row the policy hides is not synced.
+     */
     public function view(SyncPrincipal $principal, ?string $scope): ViewDefinition
     {
-        return EntityTypeView::of($this->entityType());
+        $view = EntityTypeView::of($this->entityType());
+        $policy = $this->gate->getPolicyFor($this->model);
+        if (! is_object($policy) || ! method_exists($policy, 'view')) {
+            return $view;
+        }
+
+        $gate = $this->gate->forUser($this->user($principal));
+
+        return new PolicyView(
+            $view,
+            fn (EntityRecord $record): bool => $gate->allows('view', $this->fromLog($record)),
+            // Per principal: the rule's answers differ by who is asking, and a
+            // window cut for one user must never be resumed by another.
+            $policy::class."\0".$principal->id,
+        );
     }
 
     /** @return list<string> */
@@ -215,6 +234,27 @@ class ModelSyncableType implements PersistsRecords, SyncableType
     public function connectionName(): ?string
     {
         return $this->prototype->getConnectionName();
+    }
+
+    /** A model carrying what sync holds for a row, with no database read. */
+    private function fromLog(EntityRecord $record): Model
+    {
+        $model = $this->prototype->newInstance();
+        $attributes = [$model->getKeyName() => $record->entity->id];
+        $column = $this->prototype->syncScopeColumn();
+        if ($column !== null) {
+            $attributes[$column] = $this->scopeOf($record->entity->space);
+        }
+        foreach ($this->prototype->syncFields() as $field) {
+            if (array_key_exists($field, $record->fields)) {
+                $value = $record->value($field);
+                $attributes[$field] = $value->exists ? $value->value() : null;
+            }
+        }
+        $model->syncFill($attributes);
+        $model->exists = true;
+
+        return $model;
     }
 
     /**

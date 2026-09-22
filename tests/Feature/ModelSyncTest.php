@@ -369,3 +369,32 @@ it('refuses to write a row that belongs to another tenant', function () {
 
     expect(Note::find(noteId('alice'))->team_id)->toBe('others');
 });
+
+/**
+ * viewAny opens the type; view decides the rows. A row the policy hides used to
+ * be synced to everyone in the tenant anyway.
+ */
+it('keeps a row the view policy hides off the device, and takes it away when it becomes hidden', function () {
+    $this->actingAs(member('alice', 'owners'));
+    pushNote()->assertOk();
+    pushNote(['mutation_id' => 'm2', 'sequence' => 2, 'operations' => [
+        ['field' => 'title', 'op' => 'set', 'value' => 'Secret'], ['field' => 'status', 'op' => 'set', 'value' => 'private'],
+    ]])->assertOk();
+
+    $page = $this->postJson('/sync/bootstrap', ['type' => 'notes', 'scope' => 'owners', 'page_size' => 10])->assertOk();
+    expect(array_column($page->json('records'), 'id'))->toBe([noteId('alice')]);
+
+    pushNote([
+        'mutation_id' => 'm3', 'id' => noteId('alice'), 'sequence' => 3, 'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'status', 'op' => 'set', 'value' => 'private']],
+    ])->assertOk();
+    $delta = $this->postJson('/sync/delta', ['type' => 'notes', 'scope' => 'owners', 'cursor' => $page->json('cursor')])->assertOk();
+
+    $kinds = [];
+    foreach ($delta->json('commits') as $commit) {
+        foreach ($commit['changes'] as $change) {
+            $kinds[] = $change['kind'];
+        }
+    }
+    expect($kinds)->toBe(['removed_from_scope']);
+});

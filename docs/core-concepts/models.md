@@ -75,14 +75,17 @@ synced fields - a lock flag, an owner, the tenant; the synced values on top,
 because they are what the engine is about to merge into, and the table can be
 behind them while a write is in flight.
 
-### What the policy does not cover
+### Which rows a device sees
 
-Reads are decided by `viewAny`, per tenant: a caller allowed to see notes in a
-team sees every note in that team. A per-row `view` rule is **not** applied to
-bootstrap and delta, because a device's window has to be a view the server can
-describe and keep consistent as rows change. If some rows in a tenant must stay
-hidden from some members, write a `SyncableType` whose `view()` expresses that
-rule, and let sync bind it into the cursor.
+`viewAny` decides whether a caller may read the type at all; the policy's `view`
+rule, when it has one, decides which rows. It applies to bootstrap pages, to
+every change a delta carries - a row that becomes hidden is removed from the
+device - and to what a conflict answer may disclose. The rule is asked about a
+model built from what sync holds for the row (its key, tenant and synced fields)
+rather than from the table, so a bootstrap page does not cost a query per row;
+base the rule on those. A change to the rule itself - a user losing access to a
+project - is not a change to any row: bump the principal's `binding` and devices
+rebuild their window under the new rule.
 
 ## The key is a UUID the server chooses
 

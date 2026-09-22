@@ -12,6 +12,12 @@ class NotePolicy
         return $user->team_id !== 'outsiders';
     }
 
+    /** A private note is its author's alone - here, nobody outside the owners team sees one. */
+    public function view(Member $user, Note $note): bool
+    {
+        return $note->status !== 'private' || $user->team_id === 'owners-admins';
+    }
+
     public function create(Member $user): bool
     {
         return $user->team_id !== 'readers';
