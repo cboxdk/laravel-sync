@@ -45,12 +45,13 @@ The policy is handed a model carrying the record **as sync holds it**, not as th
 table holds it. Those differ for as long as a write is in flight, and the one the
 engine is about to merge into is the one the decision has to be made against.
 
-## The key has to be one a client can mint
+## The key is a string the server chooses
 
-A device creates a record long before the server has seen it, so an
-auto-incrementing key cannot work — the database only names a row on insert.
-Registering such a model is refused by name rather than failing later as a
-constraint violation.
+Sync names a new record from the mutation that created it, before the row is
+inserted, so a replay of the same mutation lands on the same id instead of
+creating a second row. An auto-incrementing key cannot work: the database only
+names a row on insert. Registering such a model is refused by name rather than
+failing later as a constraint violation.
 
 ```php
 public $incrementing = false;

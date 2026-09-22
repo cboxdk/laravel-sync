@@ -53,9 +53,9 @@ class ModelSyncableType implements PersistsRecords, SyncableType
         }
         if ($instance->getIncrementing()) {
             throw new \LogicException(sprintf(
-                '%s uses an auto-incrementing key, which cannot sync: a device that is offline has to be able to '
-                .'create a record before the server has seen it, so the id must be one the client can mint. '
-                .'Set $incrementing = false and $keyType = "string", and key the model with a UUID or ULID.',
+                '%s uses an auto-incrementing key, which cannot sync: sync names a new record from the mutation '
+                .'that created it, before the row is inserted, so a replay of that mutation lands on the same id. '
+                .'Set $incrementing = false and $keyType = "string".',
                 $this->model,
             ));
         }
