@@ -12,6 +12,7 @@ use Cbox\Sync\Data\MutationResult;
 use Cbox\Sync\Engine;
 use Cbox\Sync\Enums\MutationKind;
 use Cbox\Sync\Enums\MutationStatus;
+use Cbox\Sync\Enums\OnConflict;
 use Cbox\Sync\Exceptions\ProtocolException;
 use Cbox\Sync\Laravel\Contracts\SyncableModel;
 use Cbox\Sync\Laravel\Exceptions\SyncConflict;
@@ -23,6 +24,7 @@ use Cbox\Sync\ValueObjects\Replica;
 use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Route;
 
 /**
  * Turns an ordinary model save into a mutation, so the log knows about it.
@@ -81,11 +83,16 @@ class SyncRecorder
             $operations[] = FieldOperation::set($field, $value);
         }
 
-        $expected = $this->expectedVersion();
-        $claimed = $expected ?? $this->claimedBase();
+        // A version the caller named applies to the model it was talking
+        // about - the one the route bound - and to nothing else saved while
+        // handling the request.
+        $concerned = $this->isRouteModel($model);
+        $ifMatch = $concerned ? $this->ifMatch() : null;
+        $base = $concerned ? $this->claimedBase() : null;
+
         for ($attempt = 1; ; $attempt++) {
             try {
-                $result = $this->attempt($entity, $deleting, $operations, $claimed, $expected);
+                $result = $this->attempt($entity, $deleting, $operations, $ifMatch, $base);
             } catch (ProtocolException $collided) {
                 // Another trusted write took this sequence number between the
                 // read and the lock. Nothing was stored for this one.
@@ -100,17 +107,18 @@ class SyncRecorder
             }
 
             $status = $result->status;
+            // A write that named no version means "I know the current state".
+            // Refused anyway, the state moved between the read and the lock,
+            // and a fresh read settles it. Pull rather than preserve, so the
+            // race leaves no conflict group behind.
             $raced = $status === MutationStatus::MutationGap
-                // A write with no claimed version means "I know the current
-                // state"; if it conflicts anyway, the state moved between the
-                // read and the lock, and a fresh read settles it.
-                || ($claimed === null && $status === MutationStatus::Conflict);
+                || ($ifMatch === null && $base === null && $status === MutationStatus::PullRequired);
             if ($raced && $attempt < self::ATTEMPTS) {
                 continue;
             }
 
             match ($status) {
-                MutationStatus::Conflict, MutationStatus::PreconditionFailed => throw SyncConflict::from($result),
+                MutationStatus::Conflict, MutationStatus::PullRequired, MutationStatus::PreconditionFailed => throw SyncConflict::from($result),
                 MutationStatus::Rejected, MutationStatus::ValidationFailed, MutationStatus::MutationGap => throw SyncRejected::from($result),
                 default => null,
             };
@@ -119,8 +127,11 @@ class SyncRecorder
         }
     }
 
-    /** @param list<FieldOperation> $operations */
-    private function attempt(EntityKey $entity, bool $deleting, array $operations, ?int $claimed, ?int $expected): ?MutationResult
+    /**
+     * @param  list<FieldOperation>  $operations
+     * @param  list<int>|null  $ifMatch  null when no precondition was asked for
+     */
+    private function attempt(EntityKey $entity, bool $deleting, array $operations, ?array $ifMatch, ?int $base): ?MutationResult
     {
         // The log decides whether this is a create, not the model: a row that
         // predates sync - or was written around it - has no record yet.
@@ -135,13 +146,20 @@ class SyncRecorder
         };
 
         $replica = new Replica('server');
-
-        // A base version the caller supplied is what turns an ordinary write
-        // into a checked one. Without it the base is whatever is stored now,
-        // which is the truthful statement that this write knows the current
-        // state - and a write that knows the current state cannot conflict.
         $stored = $current?->version->value ?? 0;
-        $base = $kind === MutationKind::Create ? 0 : ($claimed ?? $stored);
+
+        // If-Match lists the versions the caller will accept; the write goes
+        // ahead only if the record is at one of them. A header that names no
+        // version it can be matched against fails rather than being ignored.
+        $expected = null;
+        if ($ifMatch !== null && $kind !== MutationKind::Create) {
+            $expected = in_array($stored, $ifMatch, true) ? $stored : ($ifMatch[0] ?? 0);
+        }
+
+        // A base version is what turns an ordinary write into a checked one.
+        // Without it the base is whatever is stored now - the truthful
+        // statement that this write knows the current state.
+        $baseVersion = $kind === MutationKind::Create ? 0 : ($expected ?? $base ?? $stored);
 
         return $this->engine->process(
             new Mutation(
@@ -150,11 +168,16 @@ class SyncRecorder
                 $replica,
                 new MutationSequence($this->store->acknowledged($entity->space, $replica) + 1),
                 $kind,
-                new RecordVersion($base),
+                new RecordVersion(min($baseVersion, $stored)),
                 $kind === MutationKind::Delete ? [] : $operations,
-                expectedVersion: $kind === MutationKind::Create || $expected === null ? null : new RecordVersion($expected),
+                expectedVersion: $expected === null ? null : new RecordVersion($expected),
             ),
             new AdapterContext($this->actor()),
+            // Never preserve a conflict from here. The table is being written
+            // in the same transaction, and a request that lost is answered 409
+            // with nothing kept - not with a candidate waiting in a group for a
+            // choice nobody will be asked to make.
+            OnConflict::Pull,
         );
     }
 
@@ -181,19 +204,48 @@ class SyncRecorder
     }
 
     /**
-     * If-Match, as HTTP means it: the write happens only if the record is still
-     * at this version, otherwise 412. It is the whole-record precondition a
-     * REST client asks for when it sends an ETag back - not a merge.
+     * If-Match, as HTTP means it: the versions the caller accepts, as a list.
+     *
+     * Null when there is no header or it is "*" - any current version will
+     * do. An empty list when the header names nothing this can compare, which
+     * fails the write: ignoring a precondition the caller asked for would do
+     * exactly what it asked us not to.
+     *
+     * @return list<int>|null
      */
-    private function expectedVersion(): ?int
+    private function ifMatch(): ?array
     {
-        $etag = $this->request()?->headers->get('If-Match');
-        if (! is_string($etag)) {
+        $header = $this->request()?->headers->get('If-Match');
+        if (! is_string($header) || trim($header) === '' || trim($header) === '*') {
             return null;
         }
-        $version = trim(str_starts_with($etag, 'W/') ? substr($etag, 2) : $etag, '"');
 
-        return ctype_digit($version) ? (int) $version : null;
+        $versions = [];
+        foreach (explode(',', $header) as $tag) {
+            $tag = trim($tag);
+            $tag = trim(str_starts_with($tag, 'W/') ? substr($tag, 2) : $tag, '"');
+            if (ctype_digit($tag)) {
+                $versions[] = (int) $tag;
+            }
+        }
+
+        return $versions;
+    }
+
+    /** Whether this is the model the current route is about. */
+    private function isRouteModel(Model $model): bool
+    {
+        $route = $this->request()?->route();
+        if (! $route instanceof Route) {
+            return false;
+        }
+        foreach ($route->parameters() as $parameter) {
+            if ($parameter instanceof Model && $parameter::class === $model::class && $parameter->getKey() === $model->getKey()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

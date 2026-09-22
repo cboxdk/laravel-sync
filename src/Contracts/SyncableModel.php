@@ -33,6 +33,13 @@ interface SyncableModel
     public function syncValues(array $fields): array;
 
     /**
+     * Put values from the log into the row, in the stored form.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function syncFill(array $values): static;
+
+    /**
      * @template TReturn
      *
      * @param  \Closure(): TReturn  $callback

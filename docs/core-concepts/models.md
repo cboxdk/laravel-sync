@@ -38,10 +38,13 @@ guessed at: every column would include whatever the table holds - tokens, intern
 notes, columns added next year - and would put it on every device. A field in
 `$hidden` is never synced for the same reason.
 
-Values travel in the model's **serialized** form - what `toArray()` and an API
-resource show - and are written back through `fill()`. That is what makes casts
-round-trip: an `array` field is a JSON object on the wire and an array again in
-your model, a date is an ISO 8601 string, an enum is its value.
+Values travel in their **stored** form - what the column holds - and are written
+back the same way, past casts and mutators. That is what makes the round trip
+exact: a date stays the date it is whatever the app timezone, an accessor's
+presentation never reaches the log, and a column the database defaulted is logged
+as the value it got. JSON columns (`array`, `json`, `object`, `collection` casts)
+are the one exception: they travel as the JSON they hold, so a device sees a
+document rather than a string. An encrypted column travels encrypted.
 
 Authorization is **not** here. It goes to the Gate, so your existing policy
 decides:
@@ -119,6 +122,9 @@ Content-Type: application/json
 {"title": "Mine", "base_version": 7}
 ```
 
+Both apply to the model the route is about - the one route model binding handed
+your controller - and to nothing else saved while handling the request.
+
 `base_version` is **field-level**: the write merges unless someone else changed
 one of the same fields since version 7. Edits to other fields go through. This
 is what a sync-aware client wants.
@@ -130,8 +136,10 @@ If-Match: "7"
 
 `If-Match` is what HTTP says it is - a precondition on the **whole** record. If
 anything changed since version 7, even a field this write does not touch, the
-answer is **412** and nothing is written. This is what a REST client that sends
-an ETag back expects.
+answer is **412** and nothing is written. A list (`"6", "7"`) accepts any of
+them, `*` accepts any version, and a header with nothing comparable in it fails
+rather than being ignored. This is what a REST client that sends an ETag back
+expects.
 
 Both checks run **before** the row is written. A write that lost raises
 `SyncConflict`, which Laravel renders as **409** (or 412) carrying what the
@@ -166,9 +174,13 @@ Sync's own write back to your table does not count as a new edit; that is what
 `Note::withoutSyncing()` marks, and you can use it yourself for an import that
 should not be replayed to devices.
 
-An update is recorded on `updating`, before the row is written, and carries only
-the attributes this save changed. A create is recorded on `created`, after the
-insert, because a key your model generates itself is only there by then.
+`save()` runs in one transaction with its recording. An update carries only the
+attributes this save changed; a create is read back from the table so the log
+has the defaults the database filled in. A conflict or refusal while recording
+rolls the row back, and an observer that cancels the save rolls back the
+recording - so no order of listeners leaves the table and the log disagreeing.
+A model that overrides `save()` itself keeps recording but loses the shared
+transaction.
 
 Three things are refused rather than half-done:
 
@@ -181,9 +193,8 @@ Three things are refused rather than half-done:
   the log commit together only if one transaction covers both; set
   `sync.connection` to the model's connection.
 
-**Atomicity, stated rather than implied:** Laravel does not wrap `save()` in a
-transaction. A conflict or a refusal is caught before the write, so those never
-leave the two apart; a database failure part-way through can. Wrap your own
-write in `DB::transaction()` if that matters. The API path already does - a
-client's write and its record commit or roll back as one, and a device is only
-told about it once the outermost transaction has committed.
+**Atomicity, stated rather than implied:** the row and its recording commit
+together when the model and the sync store share a connection - the default. The
+API path refuses a model on another connection outright; an ordinary save on one
+still records, but the two are then separate commits. A device is only told
+about a write once the outermost transaction has committed.

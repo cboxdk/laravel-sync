@@ -143,8 +143,12 @@ class ModelSyncableType implements PersistsRecords, SyncableType
     {
         $attributes = [];
         foreach ($this->prototype->syncFields() as $field) {
-            $value = $record->value($field);
-            $attributes[$field] = $value->exists ? $value->value() : null;
+            // A field the log has never held is left as the table has it; a
+            // field the log holds with no value was unset, and becomes NULL.
+            if (array_key_exists($field, $record->fields)) {
+                $value = $record->value($field);
+                $attributes[$field] = $value->exists ? $value->value() : null;
+            }
         }
 
         // The tenant is not a synced field - a client must never be able to set
@@ -167,12 +171,12 @@ class ModelSyncableType implements PersistsRecords, SyncableType
                 throw new \LogicException(sprintf('Record %s belongs to a different tenant than the one this write was authorized for.', $record->entity->id));
             }
 
-            // forceFill, not fill: the key and the tenant are deliberately not
-            // fillable, and mass assignment would drop them silently. It is not
-            // the boundary that matters here either - writableFields already
-            // decided what a client may set, before the engine ever saw it.
-            $row->forceFill($attributes);
-            $row->setAttribute($row->getKeyName(), $record->entity->id);
+            // Raw, not fill(): the key and the tenant are deliberately not
+            // fillable, and writableFields already decided what a client may
+            // set before the engine saw it. And in the stored form, past casts
+            // and mutators: the log holds what the column holds, so writing it
+            // back is exact.
+            $row->syncFill($attributes + [$row->getKeyName() => $record->entity->id]);
             if ($row->save() === false) {
                 // An observer vetoed it. Answering "applied" would leave the
                 // log and the table disagreeing; failing rolls both back.
@@ -230,17 +234,26 @@ class ModelSyncableType implements PersistsRecords, SyncableType
         if ($column !== null) {
             $query->where($column, $this->scopeOf($record->entity->space));
         }
-        $model = $query->first() ?? new $this->model;
+        $row = $query->first();
+        // A fresh instance of the registered model carrying the row, so the
+        // policy gets the application's own class with its casts and methods.
+        $model = $this->prototype->newInstance();
+        if ($row !== null) {
+            $model->setRawAttributes($row->getAttributes(), true);
+        }
 
         $attributes = [$model->getKeyName() => $record->entity->id];
         if ($column !== null) {
             $attributes[$column] = $this->scopeOf($record->entity->space);
         }
         foreach ($this->prototype->syncFields() as $field) {
-            $value = $record->value($field);
-            $attributes[$field] = $value->exists ? $value->value() : null;
+            if (array_key_exists($field, $record->fields)) {
+                $value = $record->value($field);
+                $attributes[$field] = $value->exists ? $value->value() : null;
+            }
         }
-        $model->forceFill($attributes)->exists = true;
+        $model->syncFill($attributes);
+        $model->exists = true;
 
         return $model;
     }

@@ -71,6 +71,45 @@ trait Syncable
     }
 
     /**
+     * The casts whose stored form is JSON text. Their value travels as the
+     * JSON it holds, so a device sees an object rather than a string of one.
+     */
+    private const SYNC_JSON_CASTS = ['array', 'json', 'json:unicode', 'object', 'collection'];
+
+    /**
+     * Save, with the row and the log moving together.
+     *
+     * The write and its recording share one transaction on the model's
+     * connection. A conflict or a refusal raised while recording rolls the
+     * row back, and an observer that cancels the save rolls back a recording
+     * that already happened - there is no order of listeners in which the
+     * table and the log can end up disagreeing.
+     *
+     * A model that defines its own save() replaces this one; it still records,
+     * but loses the shared transaction.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function save(array $options = []): bool
+    {
+        if (self::$syncSuspended) {
+            return parent::save($options);
+        }
+
+        try {
+            return $this->getConnection()->transaction(function () use ($options): bool {
+                if (! parent::save($options)) {
+                    throw new Exceptions\SaveCancelled;
+                }
+
+                return true;
+            });
+        } catch (Exceptions\SaveCancelled) {
+            return false;
+        }
+    }
+
+    /**
      * Every ordinary save and delete becomes a mutation, so the log knows.
      *
      * An edit made anywhere in the application - an admin screen, a console
@@ -79,25 +118,13 @@ trait Syncable
      * client for ever, because they are following a sequence it never appeared
      * in.
      *
-     * An update is recorded BEFORE the row is written, on `updating`. That is
-     * what makes a conflict a clean 409: the log refuses, the exception stops
-     * Eloquent, and the table never holds the value that lost. Recording after
-     * the write left the rejected value in the table and the old one in the
-     * log. It also carries exactly this write's changes - the dirty attributes
-     * - where the previous save's leftovers used to ride along.
+     * Recorded after the write, inside save()'s transaction: a create is read
+     * back from the table so the log holds the defaults the database filled
+     * in, and an update carries exactly this save's changes.
      *
-     * A create is recorded on `created`, after the insert, because a key the
-     * model generates itself (HasUuids and friends) is only there by then. A
-     * create cannot conflict, so nothing is lost by waiting.
-     *
-     * These are events rather than overrides of save() and delete() on purpose:
+     * These are events rather than overrides of delete() on purpose:
      * overriding delete() would collide with SoftDeletes, which a host is very
      * likely to be using already.
-     *
-     * ATOMICITY: Laravel does not wrap save() in a transaction. Wrap your own
-     * write in DB::transaction() if the row and the log must move together
-     * even when the database itself fails part-way. The API path does this for
-     * you - a client's write and its record commit or roll back as one.
      */
     public static function bootSyncable(): void
     {
@@ -105,7 +132,10 @@ trait Syncable
             if (self::$syncSuspended) {
                 return;
             }
-            app(SyncRecorder::class)->record($model, changed: $model->syncFields());
+            // Read back, so a column the database defaulted is in the log as
+            // the value it has - not left out, and not recorded as null.
+            $stored = $model->newQueryWithoutScopes()->whereKey($model->getKey())->first() ?? $model;
+            app(SyncRecorder::class)->record($stored, changed: $stored->syncFields());
         });
 
         static::updating(static function (self $model): void {
@@ -123,7 +153,13 @@ trait Syncable
                     $column,
                 ));
             }
-            app(SyncRecorder::class)->record($model, changed: array_keys($model->getDirty()));
+        });
+
+        static::updated(static function (self $model): void {
+            if (self::$syncSuspended) {
+                return;
+            }
+            app(SyncRecorder::class)->record($model, changed: array_keys($model->getChanges()));
         });
 
         static::deleted(static function (self $model): void {
@@ -151,27 +187,56 @@ trait Syncable
     }
 
     /**
-     * The value a synced field carries on the wire: the model's own serialized
-     * form, as an API resource would show it.
+     * The values these fields carry on the wire: what the column holds.
      *
-     * Not the raw attribute. For a field cast to array the raw attribute is the
-     * JSON text in the column, and writing that back through the cast encoded
-     * it a second time - a document became a string. The serialized form is
-     * what fill() takes back, so the round trip is exact for casts, dates,
-     * enums and encrypted columns alike.
+     * The stored form, not the cast or accessor form. An accessor's output is
+     * presentation - recording it put upper-cased text in the log and then in
+     * the column - and a date serialized to UTC moved a Copenhagen date back a
+     * day. JSON columns are the one exception: they travel as the JSON they
+     * hold, so a device sees a document, not a string.
+     *
+     * A field the row has no attribute for is left out, rather than recorded
+     * as null.
      *
      * @param  list<string>  $fields
      * @return array<string, mixed>
      */
     public function syncValues(array $fields): array
     {
-        $serialized = $this->attributesToArray();
+        $raw = $this->getAttributes();
         $values = [];
         foreach ($fields as $field) {
-            $values[$field] = array_key_exists($field, $serialized) ? $serialized[$field] : $this->getAttribute($field);
+            if (! array_key_exists($field, $raw)) {
+                continue;
+            }
+            $value = $raw[$field];
+            if (is_string($value) && $this->hasCast($field, self::SYNC_JSON_CASTS)) {
+                $value = json_decode($value, false, 512, JSON_THROW_ON_ERROR);
+            }
+            $values[$field] = $value;
         }
 
         return $values;
+    }
+
+    /**
+     * The inverse of syncValues(): put values from the log into the row as the
+     * column holds them, past casts and mutators.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function syncFill(array $values): static
+    {
+        $raw = [];
+        foreach ($values as $field => $value) {
+            if ($value !== null && ($this->hasCast($field, self::SYNC_JSON_CASTS) || is_array($value) || is_object($value))) {
+                $value = json_encode($value, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            }
+            $raw[$field] = $value;
+        }
+        $this->setRawAttributes(array_merge($this->getAttributes(), $raw));
+
+        return $this;
     }
 
     /** The entity type written into every synced key. Never change it once rows exist. */

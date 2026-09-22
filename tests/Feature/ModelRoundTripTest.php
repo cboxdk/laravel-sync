@@ -1,0 +1,218 @@
+<?php
+
+declare(strict_types=1);
+
+use Cbox\Sync\Contracts\EntityValidator;
+use Cbox\Sync\Contracts\Store;
+use Cbox\Sync\Data\EntityRecord;
+use Cbox\Sync\Data\FieldOperation;
+use Cbox\Sync\Data\Mutation;
+use Cbox\Sync\Data\ValidationContext;
+use Cbox\Sync\Data\ValidationFailure;
+use Cbox\Sync\Data\ValidationResult;
+use Cbox\Sync\Engine;
+use Cbox\Sync\Enums\MutationKind;
+use Cbox\Sync\Laravel\Exceptions\SyncRejected;
+use Cbox\Sync\Laravel\IlluminateStore;
+use Cbox\Sync\Laravel\Syncable;
+use Cbox\Sync\Laravel\SyncRecorder;
+use Cbox\Sync\ValueObjects\EntityKey;
+use Cbox\Sync\ValueObjects\MutationSequence;
+use Cbox\Sync\ValueObjects\RecordVersion;
+use Cbox\Sync\ValueObjects\Replica;
+use Illuminate\Contracts\Auth\Factory;
+use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Routing\Middleware\SubstituteBindings;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Schema;
+
+class Card extends Model
+{
+    use Syncable;
+
+    protected $table = 'cards';
+
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+
+    protected $fillable = ['title', 'status', 'due_on'];
+
+    protected $casts = ['due_on' => 'date'];
+}
+
+class ShoutingCard extends Card
+{
+    protected function title(): Attribute
+    {
+        return Attribute::get(fn (?string $value): ?string => $value === null ? null : strtoupper($value));
+    }
+}
+
+beforeEach(function () {
+    Schema::dropIfExists('cards');
+    Schema::create('cards', function (Blueprint $table) {
+        $table->string('id')->primary();
+        $table->string('team_id');
+        $table->string('title')->nullable();
+        $table->string('status')->default('open');
+        $table->date('due_on')->nullable();
+        $table->timestamps();
+    });
+});
+
+afterEach(function () {
+    Schema::dropIfExists('cards');
+    date_default_timezone_set('UTC');
+});
+
+function logged(string $id): ?EntityRecord
+{
+    return app(Store::class)->record(new EntityKey('cards:owners', 'cards', $id));
+}
+
+function card(string $id, array $attributes = [], string $class = Card::class): Model
+{
+    $card = new $class;
+    $card->forceFill(['id' => $id, 'team_id' => 'owners'] + $attributes)->save();
+
+    return $card;
+}
+
+/**
+ * A create used to log NULL for a column the database defaulted, and the next
+ * device push wrote that NULL back - into a NOT NULL column, so every later
+ * push to the record failed.
+ */
+it('logs the value the database filled in, not null', function () {
+    card('d1', ['title' => 'x']);
+
+    expect(logged('d1')?->value('status')->value())->toBe('open');
+});
+
+/** A date serialized to UTC moved a Copenhagen date back a day. The log holds what the column holds. */
+it('keeps a date the date it is, whatever the app timezone', function () {
+    config()->set('app.timezone', 'Europe/Copenhagen');
+    date_default_timezone_set('Europe/Copenhagen');
+
+    card('t1', ['due_on' => '2026-03-10']);
+
+    expect(logged('t1')?->value('due_on')->value())->toStartWith('2026-03-10');
+});
+
+/** An accessor is presentation. Logging its output put upper-cased text in the log and then in the column. */
+it('logs the stored value, not what an accessor makes of it', function () {
+    card('a1', ['title' => 'hello'], ShoutingCard::class);
+
+    expect(logged('a1')?->value('title')->value())->toBe('hello');
+});
+
+/** A listener registered after the trait could cancel a save the log had already taken. */
+it('takes the recording back when a later listener cancels the save', function () {
+    $card = card('c1', ['title' => 'before']);
+    Card::updating(fn (): bool => false);
+
+    $card->title = 'after';
+    expect($card->save())->toBeFalse();
+
+    expect(Card::find('c1')?->title)->toBe('before')
+        ->and(logged('c1')?->value('title')->value())->toBe('before');
+});
+
+/** A refused create used to throw with the row already in the table. */
+it('leaves no row behind when the log refuses a create', function () {
+    app()->instance(EntityValidator::class, new class implements EntityValidator
+    {
+        public function validate(ValidationContext $context): ValidationResult
+        {
+            return new ValidationResult([new ValidationFailure('no', 'No')]);
+        }
+    });
+    foreach ([Engine::class, SyncRecorder::class] as $abstract) {
+        app()->forgetInstance($abstract);
+    }
+
+    expect(fn () => card('r1', ['title' => 'bad']))->toThrow(SyncRejected::class);
+    expect(Card::find('r1'))->toBeNull();
+});
+
+function routeForCards(): void
+{
+    Route::middleware(SubstituteBindings::class)->put('/api/cards/{card}', function (Card $card) {
+        $card->update(request()->only(['title']));
+        // Something else the handler saves along the way.
+        $other = Card::find('other');
+        if ($other !== null) {
+            $other->update(['title' => 'touched by the same request']);
+        }
+
+        return response()->json(['id' => $card->id]);
+    });
+}
+
+/**
+ * If-Match lists the versions the caller accepts. A list, or anything the
+ * parser did not understand, used to be ignored and the write went through.
+ */
+it('honours an If-Match list, and refuses one it cannot read', function () {
+    routeForCards();
+    $card = card('i1', ['title' => 'v1']);
+    $card->update(['title' => 'v2']);
+
+    $this->putJson('/api/cards/i1', ['title' => 'one of them'], ['If-Match' => '"1", "2"'])->assertOk();
+    $this->putJson('/api/cards/i1', ['title' => 'stale'], ['If-Match' => '"1", "7"'])->assertStatus(412);
+    $this->putJson('/api/cards/i1', ['title' => 'garbage'], ['If-Match' => '"abc"'])->assertStatus(412);
+    $this->putJson('/api/cards/i1', ['title' => 'anything'], ['If-Match' => '*'])->assertOk();
+
+    expect(Card::find('i1')?->title)->toBe('anything');
+});
+
+/** The header is about the route's model. It used to be applied to everything saved during the request. */
+it('applies If-Match only to the model the route is about', function () {
+    routeForCards();
+    card('i2', ['title' => 'v1']);
+    card('other', ['title' => 'unrelated']);
+
+    $this->putJson('/api/cards/i2', ['title' => 'mine'], ['If-Match' => '"1"'])->assertOk();
+
+    expect(Card::find('other')?->title)->toBe('touched by the same request');
+});
+
+/**
+ * A server write that loses a race with a device used to preserve a conflict
+ * on its first attempt and then apply on the retry, leaving a group nobody
+ * would ever be asked to resolve.
+ */
+it('leaves no conflict group behind when a server write races a device', function () {
+    card('g1', ['title' => 'first']);
+    $stale = new class(app('db')->connection()) extends IlluminateStore
+    {
+        public ?EntityRecord $before = null;
+
+        public function record(EntityKey $entity): ?EntityRecord
+        {
+            // As read by a writer that looked just before a device wrote.
+            if ($this->before !== null) {
+                $record = $this->before;
+                $this->before = null;
+
+                return $record;
+            }
+
+            return parent::record($entity);
+        }
+    };
+    $stale->before = logged('g1');
+    // The device's write lands after that read.
+    app(Engine::class)->process(new Mutation('device', new EntityKey('cards:owners', 'cards', 'g1'), new Replica('device'), new MutationSequence(1), MutationKind::Update, new RecordVersion(1), [FieldOperation::set('title', 'device')]));
+    app()->instance(SyncRecorder::class, new SyncRecorder($stale, app(Engine::class), app(Factory::class)));
+
+    $card = Card::find('g1');
+    $card->title = 'admin';
+    $card->save();
+
+    expect(logged('g1')?->value('title')->value())->toBe('admin')
+        ->and(app(Store::class)->openGroups(new EntityKey('cards:owners', 'cards', 'g1')))->toBe([]);
+});

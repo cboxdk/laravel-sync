@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.7.0 - Unreleased
+
+Requires `cboxdk/sync` 0.9.
+
+### Added
+
+- **`on_conflict: "pull"`** on push: a stale edit is answered `pull_required` with nothing stored, and the device resends the same mutation rebased on the refusal's `record_version`.
+- **A change is broadcast on a private per-space channel**, driver-agnostic through Laravel's own broadcasting, when the host binds `AuthorizesSpaceChannel`.
+
+### Fixed - the model integration
+
+- **A conflict or a refusal no longer leaves the losing value in your table.** An update is recorded on `updating`, before the row is written, so a 409, a 412 or a 422 stops the save. It also carries only this save's changes; a reused instance used to push stale attributes over newer ones.
+- **Every outcome is handled.** A validation failure or rejection raises `SyncRejected` (422) instead of returning quietly.
+- **Casts round-trip.** Values travel in the model's serialized form, so an `array` field is a JSON object in the log instead of a string that was encoded again on the way back.
+- **Policies see the real row**, with the synced values laid over it, instead of a model with every non-synced attribute null.
+- **Refused by name rather than half-done:** moving a record between tenants, restoring a soft-deleted record, a model on a different connection from the sync store, a model that declares nothing to sync. Hidden fields and the tenant column are never synced.
+- **`If-Match` is a whole-record precondition (412)**, as HTTP defines it; `base_version` keeps field-level merging.
+- Writing back to the table: an unset field becomes NULL, a cancelled save rolls the write back, a row in another tenant is refused, and deletes go through the model so its observers run. The table is written only when the record actually changed.
+- Record ids are UUIDs (version 8, derived from the mutation), so a `uuid` key column holds them.
+
+### Fixed - the transport
+
+- **A replay is answered from its receipt before permissions are checked again.** A lost response followed by a permission change used to strand the device.
+- **Contention is 503 whatever raised it.** A lock wait on the space row arrives from the store as a bare `PDOException` and used to answer 500.
+- The JSON check reads the media type exactly; `text/plain; charset=+json` passed it.
+- A published config trimmed to a few keys no longer drops the nested defaults - `api.middleware` among them.
+- `SyncPrincipal::$binding` is folded into the cursor context, so a permission change makes devices rebuild, as documented.
+- A change is announced only after the outermost transaction commits, and a failing listener is logged rather than thrown out of the host's transaction.
+- A webhook is never sent without its connection pinned to the address the SSRF guard validated; `ext-curl` is required for webhook delivery.
+- Every identifier on the wire is bounded.
+
+### Fixed - CI
+
+- CI had been red since 2026-09-20 on Laravel 12 static analysis, on test tables left behind on MySQL and PostgreSQL, and on a stale requirements page. All three are fixed; analysis runs at level 10 with the strict rules, and every PHP example in the docs is parsed.
+
 ## 0.6.0 - 2026-09-21
 
 ### Added
