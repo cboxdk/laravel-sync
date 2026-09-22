@@ -30,7 +30,7 @@ class ResultMapper
         // engine returns before any of it. Emitting the zero-valued version and
         // a null sequence would have the client record a record that is not
         // there. The resume point is the whole payload.
-        if ($result->status === MutationStatus::MutationGap) {
+        if ($result->status === MutationStatus::MutationGap || $result->status === MutationStatus::ReceiptPruned) {
             return [
                 'status' => $result->status->value,
                 'acknowledged_sequence' => $result->acknowledgedSequence,

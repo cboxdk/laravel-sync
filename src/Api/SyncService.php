@@ -16,6 +16,7 @@ use Cbox\Sync\Engine;
 use Cbox\Sync\Enums\MutationStatus;
 use Cbox\Sync\Enums\OnConflict;
 use Cbox\Sync\Exceptions\ProtocolException;
+use Cbox\Sync\Laravel\Api\Contracts\NormalizesValues;
 use Cbox\Sync\Laravel\Api\Contracts\PersistsRecords;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
@@ -83,6 +84,10 @@ class SyncService implements SyncEndpoints
             $type->writableFields($principal),
             $this->setting('api.max_operations', 64),
         );
+
+        if ($type instanceof NormalizesValues) {
+            $mutation = $type->normalize($mutation);
+        }
 
         // Before the engine, always. A mutation id that reaches it is
         // acknowledged forever, so a refusal afterwards would leave the client

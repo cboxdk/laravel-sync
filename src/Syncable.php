@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Casts\AsArrayObject;
 use Illuminate\Database\Eloquent\Casts\AsCollection;
 use Illuminate\Database\Eloquent\Casts\AsEnumArrayObject;
 use Illuminate\Database\Eloquent\Casts\AsEnumCollection;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -199,7 +200,11 @@ trait Syncable
             if (self::$syncSuspended) {
                 return;
             }
-            app(SyncRecorder::class)->record($model, changed: array_keys($model->getChanges()));
+            // Read back, like a create: an increment racing another sets this
+            // instance to its own +1, a DB::raw() assignment holds an
+            // expression - the column is what devices must get.
+            $stored = $model->newQueryWithoutScopes()->whereKey($model->getKey())->first() ?? $model;
+            app(SyncRecorder::class)->record($stored, changed: array_keys($model->getChanges()));
         });
 
         static::deleted(static function (self $model): void {
@@ -284,6 +289,39 @@ trait Syncable
         $enum = $this->castAttribute($field, $value);
 
         return $enum instanceof \BackedEnum ? $enum->value : $value;
+    }
+
+    /**
+     * What values a device sent become, once this model has had its say:
+     * casts, mutators, dates brought into the app's timezone - the same wire
+     * form a server-side save of those values would log. A value the model
+     * cannot take - an unknown enum case, a date that is not one - is refused.
+     *
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     *
+     * @throws \InvalidArgumentException naming the field that could not be taken
+     */
+    public function syncNormalize(array $values): array
+    {
+        $probe = $this->newInstance();
+        foreach ($values as $field => $value) {
+            try {
+                if ($value !== null && $this->isDateCastable($field) && (is_string($value) || is_int($value))) {
+                    // An offset the device sent is honoured, then expressed in
+                    // the app's timezone - dropping it moved 10:00+02:00 to 10:00.
+                    $value = Carbon::parse(is_int($value) ? '@'.$value : $value)->setTimezone(date_default_timezone_get());
+                }
+                $probe->setAttribute($field, $value);
+                // Reading it back is what an enum or a custom cast would do on
+                // every later read; failing here is failing once, at the door.
+                $probe->getAttribute($field);
+            } catch (\Throwable $invalid) {
+                throw new \InvalidArgumentException($field, previous: $invalid);
+            }
+        }
+
+        return $probe->syncValues(array_keys($values));
     }
 
     /**

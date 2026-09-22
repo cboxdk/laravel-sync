@@ -87,8 +87,14 @@ class SyncRecorder
         // about - the one the route bound - and to nothing else saved while
         // handling the request.
         $concerned = $this->isRouteModel($model);
-        $ifMatch = $concerned ? $this->ifMatch() : null;
-        $base = $concerned ? $this->claimedBase() : null;
+        // A request's precondition is about the record as the request found
+        // it. Once it held for one save, the request's later saves of the same
+        // record are its own work, not a race - checking again answered 412
+        // with the first save already committed.
+        $marker = 'sync.precondition_held.'.$model::class.':'.$entity->id;
+        $held = $this->request()?->attributes->get($marker) === true;
+        $ifMatch = $concerned && ! $held ? $this->ifMatch() : null;
+        $base = $concerned && ! $held ? $this->claimedBase() : null;
 
         for ($attempt = 1; ; $attempt++) {
             try {
@@ -119,9 +125,12 @@ class SyncRecorder
 
             match ($status) {
                 MutationStatus::Conflict, MutationStatus::PullRequired, MutationStatus::PreconditionFailed => throw SyncConflict::from($result),
-                MutationStatus::Rejected, MutationStatus::ValidationFailed, MutationStatus::MutationGap => throw SyncRejected::from($result),
+                MutationStatus::Rejected, MutationStatus::ValidationFailed, MutationStatus::MutationGap, MutationStatus::ReceiptPruned => throw SyncRejected::from($result),
                 default => null,
             };
+            if ($concerned && ($ifMatch !== null || $base !== null)) {
+                $this->request()?->attributes->set($marker, true);
+            }
 
             return;
         }

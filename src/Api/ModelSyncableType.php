@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Cbox\Sync\Laravel\Api;
 
 use Cbox\Sync\Data\EntityRecord;
+use Cbox\Sync\Data\FieldOperation;
+use Cbox\Sync\Data\Mutation;
 use Cbox\Sync\Enums\MutationKind;
+use Cbox\Sync\Laravel\Api\Contracts\NormalizesValues;
 use Cbox\Sync\Laravel\Api\Contracts\PersistsRecords;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
 use Cbox\Sync\Laravel\Api\Exceptions\SyncRequestRejected;
@@ -13,6 +16,8 @@ use Cbox\Sync\Laravel\Api\Support\PolicyView;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\Laravel\Contracts\SyncableModel;
 use Cbox\Sync\Laravel\Syncable;
+use Cbox\Sync\Laravel\SyncRecorder;
+use Cbox\Sync\ValueObjects\FieldValue;
 use Cbox\Sync\Views\EntityTypeView;
 use Cbox\Sync\Views\ViewDefinition;
 use Illuminate\Contracts\Auth\Access\Gate;
@@ -33,7 +38,7 @@ use Illuminate\Database\Eloquent\Model;
  * and the one the engine is about to merge into is the one the decision has to
  * be made against.
  */
-class ModelSyncableType implements PersistsRecords, SyncableType
+class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableType
 {
     /** @var Model&SyncableModel */
     private Model $prototype;
@@ -111,7 +116,17 @@ class ModelSyncableType implements PersistsRecords, SyncableType
 
         return new PolicyView(
             $view,
-            fn (EntityRecord $record): bool => $gate->allows('view', $this->fromLog($record)),
+            // The real row, with sync's values over it - a rule that reads a
+            // column devices never see must still hide what it hides on REST.
+            // One that cannot even evaluate hides the row rather than failing
+            // the whole page for everyone in the tenant.
+            function (EntityRecord $record) use ($gate): bool {
+                try {
+                    return $gate->allows('view', $this->hydrate($record));
+                } catch (\Throwable) {
+                    return false;
+                }
+            },
             // Per principal: the rule's answers differ by who is asking, and a
             // window cut for one user must never be resumed by another.
             $policy::class."\0".$principal->id,
@@ -182,7 +197,9 @@ class ModelSyncableType implements PersistsRecords, SyncableType
         /** @var class-string<Model&SyncableModel> $model */
         $model = $this->model;
         $model::withoutSyncing(function () use ($model, $record, $attributes, $column, $tenant): void {
-            $row = $model::query()->whereKey($record->entity->id)->first() ?? new $model;
+            // Without global scopes: a row the application's scope hides is
+            // still the row, and missing it here inserted a duplicate key.
+            $row = $model::query()->withoutGlobalScopes()->whereKey($record->entity->id)->first() ?? new $model;
             $owner = $column === null ? null : $row->getAttribute($column);
             if ($row->exists && $column !== null && (! (is_string($owner) || is_int($owner)) || (string) $owner !== $tenant)) {
                 // A row with this key in ANOTHER tenant. Writing it would hand
@@ -202,6 +219,60 @@ class ModelSyncableType implements PersistsRecords, SyncableType
                 throw new \RuntimeException(sprintf('Saving %s %s was cancelled by the application.', $model, $record->entity->id));
             }
         });
+
+        // What the application's own observers made of it - a trimmed title,
+        // a computed field - is what the table now holds, and the devices have
+        // to get that too, or the two never converge. Read back and recorded
+        // as the server's own write, like any other save.
+        $row = ($this->model)::query()->withoutGlobalScopes()->whereKey($record->entity->id)->first();
+        if ($row !== null) {
+            // The registered class, typed, carrying the row as stored.
+            $stored = $this->prototype->newInstance();
+            $stored->setRawAttributes($row->getAttributes(), true);
+            $stored->exists = true;
+            $drift = [];
+            foreach ($stored->syncValues(array_keys($attributes)) as $field => $value) {
+                if (in_array($field, $this->prototype->syncFields(), true) && ! FieldValue::of($value)->equals($record->value($field))) {
+                    $drift[] = $field;
+                }
+            }
+            if ($drift !== []) {
+                app(SyncRecorder::class)->record($stored, changed: $drift);
+            }
+        }
+    }
+
+    /**
+     * Put a device's values into this model's own form before the engine sees
+     * them, so the log holds for a field exactly what a save on the server of
+     * the same values would log - typed, in the app's timezone, through the
+     * model's mutators.
+     */
+    public function normalize(Mutation $mutation): Mutation
+    {
+        $values = [];
+        foreach ($mutation->operations as $operation) {
+            if ($operation->value->exists) {
+                $values[$operation->field] = $operation->value->value();
+            }
+        }
+        if ($values === []) {
+            return $mutation;
+        }
+        try {
+            $normalized = $this->prototype->syncNormalize($values);
+        } catch (\InvalidArgumentException $invalid) {
+            throw new SyncRequestRejected(sprintf('Field "%s" has a value this type cannot hold', $invalid->getMessage()), 'invalid_field_value');
+        }
+
+        $operations = [];
+        foreach ($mutation->operations as $operation) {
+            $operations[] = $operation->value->exists && array_key_exists($operation->field, $normalized)
+                ? FieldOperation::set($operation->field, $normalized[$operation->field])
+                : $operation;
+        }
+
+        return $mutation->rebased($mutation->baseVersion, $operations);
     }
 
     /** The tenant back out of the space this type built in space(). */
@@ -222,7 +293,7 @@ class ModelSyncableType implements PersistsRecords, SyncableType
         $model = $this->model;
         $column = $this->prototype->syncScopeColumn();
         $model::withoutSyncing(function () use ($model, $record, $column): void {
-            $query = $model::query()->whereKey($record->entity->id);
+            $query = $model::query()->withoutGlobalScopes()->whereKey($record->entity->id);
             if ($column !== null) {
                 $query->where($column, $this->scopeOf($record->entity->space));
             }
@@ -234,27 +305,6 @@ class ModelSyncableType implements PersistsRecords, SyncableType
     public function connectionName(): ?string
     {
         return $this->prototype->getConnectionName();
-    }
-
-    /** A model carrying what sync holds for a row, with no database read. */
-    private function fromLog(EntityRecord $record): Model
-    {
-        $model = $this->prototype->newInstance();
-        $attributes = [$model->getKeyName() => $record->entity->id];
-        $column = $this->prototype->syncScopeColumn();
-        if ($column !== null) {
-            $attributes[$column] = $this->scopeOf($record->entity->space);
-        }
-        foreach ($this->prototype->syncFields() as $field) {
-            if (array_key_exists($field, $record->fields)) {
-                $value = $record->value($field);
-                $attributes[$field] = $value->exists ? $value->value() : null;
-            }
-        }
-        $model->syncFill($attributes);
-        $model->exists = true;
-
-        return $model;
     }
 
     /**
@@ -270,7 +320,7 @@ class ModelSyncableType implements PersistsRecords, SyncableType
     private function hydrate(EntityRecord $record): Model
     {
         $column = $this->prototype->syncScopeColumn();
-        $query = ($this->model)::query()->whereKey($record->entity->id);
+        $query = ($this->model)::query()->withoutGlobalScopes()->whereKey($record->entity->id);
         if ($column !== null) {
             $query->where($column, $this->scopeOf($record->entity->space));
         }

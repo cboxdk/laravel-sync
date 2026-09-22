@@ -12,10 +12,14 @@ use Cbox\Sync\Data\ValidationFailure;
 use Cbox\Sync\Data\ValidationResult;
 use Cbox\Sync\Engine;
 use Cbox\Sync\Enums\MutationKind;
+use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
+use Cbox\Sync\Laravel\Api\Contracts\SyncPrincipals;
+use Cbox\Sync\Laravel\Api\GuardPrincipals;
 use Cbox\Sync\Laravel\Exceptions\SyncRejected;
 use Cbox\Sync\Laravel\IlluminateStore;
 use Cbox\Sync\Laravel\Syncable;
 use Cbox\Sync\Laravel\SyncRecorder;
+use Cbox\Sync\Laravel\Tests\Fixtures\Member;
 use Cbox\Sync\ValueObjects\EntityKey;
 use Cbox\Sync\ValueObjects\MutationSequence;
 use Cbox\Sync\ValueObjects\RecordVersion;
@@ -26,8 +30,16 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Routing\Middleware\SubstituteBindings;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Testing\TestResponse;
+
+enum CardKind: string
+{
+    case Task = 'task';
+    case Bug = 'bug';
+}
 
 class Card extends Model
 {
@@ -39,7 +51,7 @@ class Card extends Model
 
     protected $keyType = 'string';
 
-    protected $fillable = ['title', 'status', 'due_on', 'due_at', 'done', 'priority', 'amount', 'counter', 'opts', 'secret'];
+    protected $fillable = ['title', 'status', 'due_on', 'due_at', 'done', 'priority', 'amount', 'counter', 'opts', 'secret', 'kind'];
 
     protected $casts = [
         'due_on' => 'date',
@@ -50,6 +62,7 @@ class Card extends Model
         'counter' => 'integer',
         'opts' => AsArrayObject::class,
         'secret' => 'encrypted',
+        'kind' => CardKind::class,
     ];
 }
 
@@ -76,12 +89,14 @@ beforeEach(function () {
         $table->integer('counter')->default(0);
         $table->json('opts')->nullable();
         $table->text('secret')->nullable();
+        $table->string('kind')->nullable();
         $table->timestamps();
     });
 });
 
 afterEach(function () {
     Schema::dropIfExists('cards');
+    Schema::dropIfExists('members');
     date_default_timezone_set('UTC');
 });
 
@@ -304,4 +319,150 @@ it('carries an AsArrayObject column as the document it holds', function () {
 /** A device has no key to write an encrypted column, and sending it decrypted would undo the encryption. */
 it('never syncs an encrypted column', function () {
     expect((new Card)->syncFields())->not->toContain('secret');
+});
+
+/** Cards served over the API with an allow-all policy, as alice of team "owners". */
+function cardsOverApi(object $test): void
+{
+    Schema::dropIfExists('members');
+    Schema::create('members', function (Blueprint $table) {
+        $table->string('id')->primary();
+        $table->string('team_id');
+    });
+    config()->set('sync.api.types', [Card::class]);
+    app()->bind(SyncPrincipals::class, GuardPrincipals::class);
+    app()->forgetInstance(SyncableTypes::class);
+    Gate::policy(Card::class, AllowCards::class);
+    $test->actingAs(Member::create(['id' => 'alice', 'team_id' => 'owners']));
+}
+
+function pushCard(object $test, string $mutation, int $sequence, string $kind, string $id, int $base, array $operations): TestResponse
+{
+    return $test->postJson('/sync/push', [
+        'type' => 'cards', 'scope' => 'owners', 'mutation_id' => $mutation, 'id' => $id, 'replica' => 'device',
+        'sequence' => $sequence, 'kind' => $kind, 'base_version' => $base, 'operations' => $operations,
+    ]);
+}
+
+class AllowCards
+{
+    public function viewAny(): bool
+    {
+        return true;
+    }
+
+    public function view(Member $user, Card $card): bool
+    {
+        return $card->getAttribute('title') !== 'hidden';
+    }
+
+    public function create(): bool
+    {
+        return true;
+    }
+
+    public function update(): bool
+    {
+        return true;
+    }
+
+    public function delete(): bool
+    {
+        return true;
+    }
+}
+
+/**
+ * A device's values are put in the model's own form before they are logged, so
+ * devices and REST agree. They used to be logged as sent: "4" for an integer,
+ * 12.5 for a decimal, and a time with an offset that the table then dropped.
+ */
+it('logs a device\'s values in the same form a save on the server would', function () {
+    cardsOverApi($this);
+    $response = pushCard($this, 'm1', 1, 'create', 'h', 0, [
+        ['field' => 'title', 'op' => 'set', 'value' => 'x'],
+        ['field' => 'done', 'op' => 'set', 'value' => 1],
+        ['field' => 'priority', 'op' => 'set', 'value' => '4'],
+        ['field' => 'amount', 'op' => 'set', 'value' => 12.5],
+        ['field' => 'due_at', 'op' => 'set', 'value' => '2026-09-23T10:00:00+02:00'],
+    ])->assertOk();
+    $id = $response->json('id');
+
+    expect(logged($id)?->value('done')->value())->toBeTrue()
+        ->and(logged($id)?->value('priority')->value())->toBe(4)
+        ->and(logged($id)?->value('amount')->value())->toBe('12.50')
+        ->and(logged($id)?->value('due_at')->value())->toBe('2026-09-23 08:00:00')
+        ->and(Card::find($id)?->getRawOriginal('due_at'))->toStartWith('2026-09-23 08:00:00');
+});
+
+/** One bad enum value used to commit, then break every later bootstrap in the tenant. */
+it('refuses a value the model cannot hold, before anything is stored', function () {
+    cardsOverApi($this);
+
+    pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'kind', 'op' => 'set', 'value' => 'bogus']])
+        ->assertStatus(422)->assertJsonPath('error', 'invalid_field_value');
+
+    $this->postJson('/sync/bootstrap', ['type' => 'cards', 'scope' => 'owners', 'page_size' => 10])->assertOk();
+});
+
+/** An increment racing another used to log this instance's +1, not the column's +2. */
+it('logs what the column holds after a racing increment', function () {
+    $first = card('r1', ['title' => 'x']);
+    $second = Card::find('r1');
+    $first->increment('counter');
+    $second?->increment('counter');
+
+    expect(Card::find('r1')?->counter)->toBe(2)
+        ->and(logged('r1')?->value('counter')->value())->toBe(2);
+});
+
+/** What the application's own observers make of a device's value reaches the devices too. */
+it('logs what an observer made of a device\'s write', function () {
+    cardsOverApi($this);
+    Card::saving(function (Card $card): void {
+        $card->setAttribute('title', trim((string) $card->getAttribute('title')));
+    });
+
+    $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => '  hello ']])->assertOk()->json('id');
+
+    expect(Card::find($id)?->title)->toBe('hello')
+        ->and(logged($id)?->value('title')->value())->toBe('hello');
+});
+
+/** A global scope hides rows from the application, not from sync. */
+it('writes a row the application\'s global scope hides', function () {
+    cardsOverApi($this);
+    $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'archived']])->assertOk()->json('id');
+    Card::addGlobalScope('live', fn ($query) => $query->where('title', '!=', 'archived'));
+
+    pushCard($this, 'm2', 2, 'update', $id, 1, [['field' => 'status', 'op' => 'set', 'value' => 'done']])->assertOk()->assertJsonPath('status', 'applied');
+    pushCard($this, 'm3', 3, 'delete', $id, 2, [])->assertOk();
+
+    expect(Card::query()->withoutGlobalScopes()->whereKey($id)->exists())->toBeFalse();
+});
+
+/** The view rule decides which rows a device gets. */
+it('keeps a row the view rule hides out of bootstrap', function () {
+    cardsOverApi($this);
+    pushCard($this, 'm1', 1, 'create', 'a', 0, [['field' => 'title', 'op' => 'set', 'value' => 'shown']])->assertOk();
+    pushCard($this, 'm2', 2, 'create', 'b', 0, [['field' => 'title', 'op' => 'set', 'value' => 'hidden']])->assertOk();
+
+    $records = $this->postJson('/sync/bootstrap', ['type' => 'cards', 'scope' => 'owners', 'page_size' => 10])->assertOk()->json('records');
+
+    expect(array_map(fn (array $r) => $r['fields']['title']['value'], $records))->toBe(['shown']);
+});
+
+/** A request's precondition is checked once; its own later saves of the record are not a race. */
+it('checks If-Match once per request, not on every save of the record', function () {
+    Route::middleware(SubstituteBindings::class)->put('/api/cards/{card}/twice', function (Card $card) {
+        $card->update(['title' => 'new']);
+        $card->update(['status' => 'done']);
+
+        return response()->json(['ok' => true]);
+    });
+    card('t2', ['title' => 'orig']);
+
+    $this->putJson('/api/cards/t2/twice', [], ['If-Match' => '"1"'])->assertOk();
+
+    expect(Card::find('t2')?->status)->toBe('done');
 });

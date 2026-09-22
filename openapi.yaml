@@ -297,7 +297,7 @@ components:
         temp_id: { type: string, description: 'Present when the server renamed a create''s handle.' }
         status:
           type: string
-          enum: [applied, partial, noop, conflict, rejected, validation_failed, precondition_failed, mutation_gap, pull_required]
+          enum: [applied, partial, noop, conflict, rejected, validation_failed, precondition_failed, mutation_gap, pull_required, receipt_pruned]
           description: |
             `applied` / `partial` / `noop` — it landed.
             `conflict` — competing values were preserved; see `conflict_groups`.
@@ -305,6 +305,8 @@ components:
             `mutation_gap` — this stream's numbering is out of step with the server's; set your counter to
             exactly `acknowledged_sequence` (lower or higher) and resend. `reason` is `sequence_behind` when the
             device is the one that is behind, after restoring an older backup.
+            `receipt_pruned` — this mutation may already have been applied and its answer was pruned; it is final
+            and must not be resent. Set your counter to exactly `acknowledged_sequence` and go on with the next.
             `pull_required` — only with `on_conflict: pull`. Nothing was stored. `conflicts` names the
             fields someone else changed; pull, rethink, and resend the same mutation based on `record_version`.
         record_version: { type: integer }

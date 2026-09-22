@@ -51,9 +51,18 @@ them, and are written back past mutators:
 | backed enum | its value |
 | anything else | what the column holds |
 
+A device's values are put through the model before they are logged - casts,
+mutators, a date's offset honoured and expressed in the app's timezone - so the
+log holds the same value for a field whichever path wrote it. A value the model
+cannot hold, an unknown enum case say, is refused with `invalid_field_value`
+before anything is stored. What the application's own observers make of a write
+reaches the devices too: after the row is written it is read back, and any
+difference is recorded as the server's own write.
+
 An accessor's presentation never reaches the log, a column the database defaulted
 is logged as the value it got, and a date keeps its day whatever the app
-timezone. An **encrypted** column is never synced: a device has no key to write
+timezone. Sync's own reads and writes of your table ignore global scopes: a row
+your application hides is still the row. An **encrypted** column is never synced: a device has no key to write
 it, and sending it decrypted would undo the encryption.
 
 Authorization is **not** here. It goes to the Gate, so your existing policy
@@ -80,10 +89,10 @@ behind them while a write is in flight.
 `viewAny` decides whether a caller may read the type at all; the policy's `view`
 rule, when it has one, decides which rows. It applies to bootstrap pages, to
 every change a delta carries - a row that becomes hidden is removed from the
-device - and to what a conflict answer may disclose. The rule is asked about a
-model built from what sync holds for the row (its key, tenant and synced fields)
-rather than from the table, so a bootstrap page does not cost a query per row;
-base the rule on those. A change to the rule itself - a user losing access to a
+device - and to what a conflict answer may disclose. The rule is asked about your
+real row, with sync's values over it, so a rule that reads a column devices never
+see still hides what it hides on REST. That is one indexed read per row it
+judges. A rule that throws hides the row rather than failing the page. A change to the rule itself - a user losing access to a
 project - is not a change to any row: bump the principal's `binding` and devices
 rebuild their window under the new rule.
 
@@ -149,7 +158,8 @@ If-Match: "7"
 
 `If-Match` is what HTTP says it is - a precondition on the **whole** record. If
 anything changed since version 7, even a field this write does not touch, the
-answer is **412** and nothing is written. A list (`"6", "7"`) accepts any of
+answer is **412** and nothing is written. It is checked once per request: the
+request's later saves of the same record are its own work. A list (`"6", "7"`) accepts any of
 them, `*` accepts any version, and a header with nothing comparable in it fails
 rather than being ignored. This is what a REST client that sends an ETag back
 expects.

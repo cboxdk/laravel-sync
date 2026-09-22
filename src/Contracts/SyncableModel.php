@@ -40,6 +40,12 @@ interface SyncableModel
     public function syncFill(array $values): static;
 
     /**
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    public function syncNormalize(array $values): array;
+
+    /**
      * @template TReturn
      *
      * @param  \Closure(): TReturn  $callback
