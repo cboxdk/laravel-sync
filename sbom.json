@@ -1,7 +1,7 @@
 {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",
-    "serialNumber": "urn:uuid:e1c50688-cbfc-5c84-9519-fcd195b2dc56",
+    "serialNumber": "urn:uuid:1749be2f-ba31-57a3-bda5-658fdca41109",
     "version": 1,
     "metadata": {
         "component": {
@@ -140,12 +140,12 @@
         },
         {
             "type": "library",
-            "bom-ref": "pkg:composer/cboxdk/sync@v0.8.0",
+            "bom-ref": "pkg:composer/cboxdk/sync@v0.9.0",
             "group": "cboxdk",
             "name": "sync",
-            "version": "v0.8.0",
+            "version": "v0.9.0",
             "scope": "required",
-            "purl": "pkg:composer/cboxdk/sync@v0.8.0",
+            "purl": "pkg:composer/cboxdk/sync@v0.9.0",
             "description": "Framework-independent sync engine with explicit field conflicts for offline-first applications",
             "licenses": [
                 {
@@ -155,7 +155,7 @@
             "externalReferences": [
                 {
                     "type": "distribution",
-                    "url": "https://api.github.com/repos/cboxdk/sync/zipball/223da2a0fc28f38fee05e1c9dede44cee3d3b0fb"
+                    "url": "https://api.github.com/repos/cboxdk/sync/zipball/bc324679586cf1e26ffdbf0eafed8d4d196674bd"
                 },
                 {
                     "type": "vcs",
@@ -1710,6 +1710,31 @@
                 {
                     "type": "vcs",
                     "url": "https://github.com/phpstan/phpdoc-parser.git"
+                }
+            ]
+        },
+        {
+            "type": "library",
+            "bom-ref": "pkg:composer/phpstan/phpstan-strict-rules@2.0.12",
+            "group": "phpstan",
+            "name": "phpstan-strict-rules",
+            "version": "2.0.12",
+            "scope": "optional",
+            "purl": "pkg:composer/phpstan/phpstan-strict-rules@2.0.12",
+            "description": "Extra strict and opinionated rules for PHPStan",
+            "licenses": [
+                {
+                    "expression": "MIT"
+                }
+            ],
+            "externalReferences": [
+                {
+                    "type": "distribution",
+                    "url": "https://api.github.com/repos/phpstan/phpstan-strict-rules/zipball/2bc5ae19ae965663b62ac907ee6342c3903ec93b"
+                },
+                {
+                    "type": "vcs",
+                    "url": "https://github.com/phpstan/phpstan-strict-rules.git"
                 }
             ]
         },
