@@ -306,7 +306,8 @@ components:
             exactly `acknowledged_sequence` (lower or higher) and resend. `reason` is `sequence_behind` when the
             device is the one that is behind, after restoring an older backup.
             `receipt_pruned` — this mutation may already have been applied and its answer was pruned; it is final
-            and must not be resent. Set your counter to exactly `acknowledged_sequence` and go on with the next.
+            and must not be resent. Take THIS mutation's own `sequence` as acknowledged and go on with the next.
+            Do not jump to `acknowledged_sequence`: older writes behind it would be renumbered and applied twice.
             `pull_required` — only with `on_conflict: pull`. Nothing was stored. `conflicts` names the
             fields someone else changed; pull, rethink, and resend the same mutation based on `record_version`.
         record_version: { type: integer }

@@ -41,6 +41,9 @@ WRITING
   lower or higher than you had - and resend. Lower: the server was restored from
   a backup. Higher (reason `sequence_behind`): your device was. Nothing you
   still hold is lost.
+- `receipt_pruned`: this write may already have landed and its answer is gone.
+  Do NOT resend it. Treat its own `sequence` as acknowledged (not
+  `acknowledged_sequence`), tell the user its outcome is unknown, go on.
 - 401 means the session expired. Keep the queue; sign in again and resend.
 - Assign `sequence` when you SEND, not when you queue. A mutation that never
   reaches the server must not consume a number, or the server waits for it
