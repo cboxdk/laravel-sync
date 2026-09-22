@@ -299,6 +299,18 @@ it('never syncs a field the model hides', function () {
     expect($model->syncFields())->toBe(['title', 'status']);
 });
 
+/** Hidden was only honoured for fields derived from fillable; a model listing its sync fields synced a hidden one to every device. */
+it('never syncs a hidden field, even when the model lists it', function () {
+    $model = new class extends Note
+    {
+        protected array $syncFields = ['title', 'body', 'status'];
+
+        protected $hidden = ['body'];
+    };
+
+    expect($model->syncFields())->toBe(['title', 'status']);
+});
+
 it('refuses to guess the fields of a model that declares none', function () {
     $model = new class extends Note
     {

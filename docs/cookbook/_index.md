@@ -6,5 +6,5 @@ description: "Task-oriented recipes."
 
 # Cookbook
 
-[Serving clients](serving-clients.md) shows the endpoints this package
-deliberately does not ship, and how to write them.
+[Serving clients](serving-clients.md) shows how to put a type on the endpoints
+this package ships - or on endpoints of your own.

@@ -151,7 +151,7 @@ device made up and the response says what the record is actually called.
 No new routes. An ordinary controller keeps its shape:
 
 ```php
-Route::patch('/api/notes/{note}', function (Note $note) {
+Route::patch('/api/notes/{note}', function (UpdateNoteRequest $request, Note $note) {
     $note->update($request->validated());
 
     return new NoteResource($note);

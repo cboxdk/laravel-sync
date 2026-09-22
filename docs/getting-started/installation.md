@@ -37,11 +37,14 @@ yourself:
 php artisan vendor:publish --tag=sync-migrations
 ```
 
-You can also read the statements directly from
-`Cbox\Sync\Persistence\Pdo\PdoSchema::statements()` and apply them however your
-deployment prefers.
+Upgrading, run `php artisan migrate` again: each release that changes the schema
+ships a migration that brings an existing installation up to date (on MySQL it
+can copy tables - use a maintenance window). If you published the migrations,
+publish them again. A deployment that runs its own migrations calls the same
+installer: `PdoSchema::forConnection($pdo)->install($pdo)`.
 
 ## Databases
 
-SQLite, MySQL 8+ and PostgreSQL. The engine package's CI runs its full suite,
+SQLite 3.24+, MySQL 8.0.17+ and PostgreSQL 9.5+ (CI runs MySQL 8.4 and
+PostgreSQL 17). The engine package's CI runs its full suite,
 simulator and a multi-process concurrency experiment against all three.

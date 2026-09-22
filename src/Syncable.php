@@ -455,7 +455,9 @@ trait Syncable
 
         $declared = $this->syncDeclared('syncFields');
         if (is_array($declared) && $declared !== []) {
-            return array_values(array_diff(array_filter($declared, is_string(...)), [$tenant], $encrypted));
+            // Hidden still wins: it is the host's statement of what a response
+            // must never show, and a sync field lands in every device's database.
+            return array_values(array_diff(array_filter($declared, is_string(...)), $this->getHidden(), [$tenant], $encrypted));
         }
 
         // Fillable is the host's own statement of what a request may set, which

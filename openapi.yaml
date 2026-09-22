@@ -428,10 +428,12 @@ components:
                     ordinal: { type: integer }
                     kind:
                       type: string
-                      enum: [upsert, remove]
+                      enum: [upsert, deleted, removed_from_scope]
                       description: |
-                        `remove` means it left this VIEW, which is not the same as
-                        being deleted: it may still exist and be visible elsewhere.
+                        `deleted` means the record is gone for good. `removed_from_scope`
+                        means it left this VIEW, which is not the same as being
+                        deleted: it may still exist and be visible elsewhere. Neither
+                        carries a record.
                     id: { type: string }
                     type: { type: string }
                     version: { type: integer }

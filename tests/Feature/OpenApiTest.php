@@ -6,6 +6,7 @@ use Cbox\Sync\Contracts\EntityValidator;
 use Cbox\Sync\Data\ValidationContext;
 use Cbox\Sync\Data\ValidationFailure;
 use Cbox\Sync\Data\ValidationResult;
+use Cbox\Sync\Views\ViewChangeKind;
 use Illuminate\Testing\TestResponse;
 use Symfony\Component\Yaml\Yaml;
 
@@ -321,4 +322,11 @@ it('declares every status an endpoint can answer with', function () {
         expect(array_map('strval', array_keys($operations['post']['responses'])))
             ->toBe(['200', '401', '403', '404', '409', '413', '415', '422', '503'], $path);
     }
+});
+
+/** The spec named the delta change kinds "upsert" and "remove"; the endpoint sends the engine's own names. */
+it('names every delta change kind the endpoint can send', function () {
+    $documented = spec()['components']['schemas']['DeltaResponse']['properties']['commits']['items']['properties']['changes']['items']['properties']['kind']['enum'];
+
+    expect($documented)->toBe(array_map(fn (ViewChangeKind $kind): string => $kind->value, ViewChangeKind::cases()));
 });

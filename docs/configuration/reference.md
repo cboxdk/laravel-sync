@@ -17,6 +17,18 @@ Publish with `php artisan vendor:publish --tag=sync-config`.
 | `bootstrap.page_size` | `SYNC_BOOTSTRAP_PAGE_SIZE` | `100` | Records per bootstrap page |
 | `bootstrap.secret` | `SYNC_BOOTSTRAP_SECRET` | application key | Signs stateless tokens |
 | `retention.keep_commits` | `SYNC_KEEP_COMMITS` | `10000` | How much history to keep when you prune |
+| `api.enabled` | `SYNC_API_ENABLED` | `false` | Serve the push, bootstrap and delta endpoints. With the `frozen` bootstrap strategy this refuses to boot: frozen sessions live in one process |
+| `api.prefix` | `SYNC_API_PREFIX` | `sync` | URL prefix of the endpoints |
+| `api.middleware` | — | `['api']` | Middleware around the endpoints; put your authentication here |
+| `api.types` | — | `[]` | Entity type => `SyncableType` class, or a list of `Syncable` model classes |
+| `api.max_body_bytes` | — | `262144` | Largest request body accepted (413 above it) |
+| `api.max_operations` | — | `64` | Most field operations in one mutation |
+| `api.max_page_size` | — | `500` | Most records a client may ask for in one bootstrap page |
+| `api.max_commits` | — | `500` | Most commits in one delta page |
+| `broadcast.enabled` | `SYNC_BROADCAST_ENABLED` | `false` | Announce each commit on a private per-space channel - also needs an `AuthorizesSpaceChannel` binding |
+| `webhooks.url` | `SYNC_WEBHOOK_URL` | none | POST each commit's space and watermark here, signed; needs `cboxdk/laravel-ssrf`, `cboxdk/laravel-webhook-signature` and `ext-curl` |
+| `webhooks.endpoint` | `SYNC_WEBHOOK_ENDPOINT` | `sync` | The signing endpoint's name in `laravel-webhook-signature` |
+| `webhooks.timeout` | — | `5` | Seconds per delivery |
 
 ## MySQL: run the connection at READ COMMITTED
 
@@ -44,13 +56,6 @@ Both are bound into every client cursor. Changing either tells clients their
 local state for a view can no longer be trusted, and they re-bootstrap. Use
 `schema_version` when the meaning of projected data changes; use `epoch` when
 history itself is discarded or rebuilt.
-
-## Retention
-
-Nothing is pruned automatically. `keep_commits` is the window your own scheduled
-task should honour when it calls `prune()`. Keep enough history for your slowest
-client: a cursor below the horizon is told to re-bootstrap rather than silently
-skipping the commits it missed.
 
 ## Retention
 

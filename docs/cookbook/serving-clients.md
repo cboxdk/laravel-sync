@@ -12,10 +12,17 @@ for the wire format. What you write is the declaration of what may be reached.
 ## Declare a type
 
 ```php
+use Cbox\Sync\Data\EntityRecord;
+use Cbox\Sync\Enums\MutationKind;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
+use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
+use Cbox\Sync\Views\FieldEqualsView;
+use Cbox\Sync\Views\ViewDefinition;
 
 class TaskType implements SyncableType
 {
+    public function __construct(private readonly Teams $teams) {}
+
     public function entityType(): string
     {
         return 'tasks';
@@ -44,12 +51,13 @@ class TaskType implements SyncableType
 
     public function mayRead(SyncPrincipal $principal, ?string $scope): bool
     {
-        return $principal->id !== null;
+        return $this->teams->forUser($principal->id)->has($scope);
     }
 
     public function mayWrite(SyncPrincipal $principal, ?EntityRecord $record, MutationKind $kind): bool
     {
-        return true;
+        // Deny by default: only what this caller may do, decided here.
+        return $kind !== MutationKind::Delete || $this->teams->forUser($principal->id)->isAdmin();
     }
 }
 ```

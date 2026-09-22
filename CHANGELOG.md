@@ -4,10 +4,16 @@
 
 Requires `cboxdk/sync` 0.9.
 
+### Upgrading
+
+- **Run `php artisan migrate`.** A new migration brings an existing installation up to cboxdk/sync 0.9's schema - receipts carrying their stream position, retention columns, identifiers in a binary collation on MySQL (which copies each table: use a maintenance window) - and without it every write after the upgrade fails. If you published the migrations, publish them again.
+- A hidden field is never synced, now also when a model lists it in `$syncFields`.
+- The delta change kinds are `upsert`, `deleted` and `removed_from_scope`, as the endpoint has always sent them; `openapi.yaml` and the agent brief said `remove`.
+
 ### Added
 
 - **`on_conflict: "pull"`** on push: a stale edit is answered `pull_required` with nothing stored, and the device resends the same mutation rebased on the refusal's `record_version`.
-- **A change is broadcast on a private per-space channel**, driver-agnostic through Laravel's own broadcasting, when the host binds `AuthorizesSpaceChannel`.
+- **A change is broadcast on a private per-space channel**, driver-agnostic through Laravel's own broadcasting, when `SYNC_BROADCAST_ENABLED` is on and the host binds `AuthorizesSpaceChannel`.
 
 ### Fixed - the model integration
 

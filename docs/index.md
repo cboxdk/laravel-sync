@@ -18,9 +18,9 @@ your application already has. See [Syncing a model](core-concepts/models.md) and
 `openapi.yaml` at the package root, which is checked against the endpoints'
 actual answers by the test suite rather than maintained by hand.
 
-What it does not do is as important. There is no UI, no queue integration, and no
-authentication: the host says who is calling, and the package decides only what
-that caller may then reach.
+What it does not do is as important. There is no UI and no authentication: the
+host says who is calling, and the package decides only what that caller may then
+reach. (Webhook delivery runs on your queue; nothing else does.)
 
 ## Sections
 

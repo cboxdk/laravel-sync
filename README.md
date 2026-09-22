@@ -19,6 +19,11 @@ php artisan migrate
 use Cbox\Sync\Data\FieldOperation;
 use Cbox\Sync\Data\Mutation;
 use Cbox\Sync\Engine;
+use Cbox\Sync\Enums\MutationKind;
+use Cbox\Sync\ValueObjects\EntityKey;
+use Cbox\Sync\ValueObjects\MutationSequence;
+use Cbox\Sync\ValueObjects\RecordVersion;
+use Cbox\Sync\ValueObjects\Replica;
 
 $result = app(Engine::class)->process(new Mutation(
     id: $clientMutationId,

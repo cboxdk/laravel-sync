@@ -13,6 +13,7 @@ rather than the defaults.
 
 ```php
 use Cbox\Sync\Data\FieldOperation as Op;
+use Cbox\Sync\Enums\MutationStatus;
 use Cbox\Sync\Laravel\Testing\InteractsWithSync;
 use Cbox\Sync\ValueObjects\EntityKey;
 

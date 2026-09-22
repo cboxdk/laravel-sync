@@ -6,12 +6,15 @@ description: "What this package does not protect, and what you must."
 
 # Security
 
-This package has no opinion about authentication or authorization, and that is
-the most important thing to know about it.
+This package does no authentication: your middleware says who is calling. What
+that caller may reach is decided here, deny by default - through your
+`SyncableType` (or, for a model, its policy) for every read and write the API
+serves.
 
 - **The space is the security boundary, and you assign it.** Derive it from the
-  authenticated session, never from the request body. Nothing downstream checks
-  whether a caller may write to the space in a mutation.
+  authenticated session, never from the request body. The API maps a client's
+  scope through `SyncableType::space()`; if you call the engine yourself, nothing
+  downstream checks whether a caller may write to the space in a mutation.
 - **The raw change feed is not filtered.** `Store::pull()` returns receipts
   containing every proposed value, including proposals that were rejected or
   belong to fields a given client should never see. Only the view service

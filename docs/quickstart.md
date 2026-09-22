@@ -39,8 +39,11 @@ same ID returns the stored result instead of applying anything twice. The
 sequence is per replica per space and must have no holes — a gap is reported back
 rather than applied out of order.
 
-`$result->status` tells you what happened: applied, a no-op, a conflict whose
-competing proposals were preserved, a rejection, or a gap.
+`$result->status` tells you what happened: applied, partly applied, a no-op, a
+conflict whose competing proposals were preserved, a rejection, a failed
+precondition or validation, a gap to fill first, `pull_required` (only when you
+asked to decide conflicts yourself), or `receipt_pruned` - a replay too old for
+its answer to be known.
 
 ## Serve a client view
 
@@ -50,8 +53,9 @@ use Cbox\Sync\Views\{FieldEqualsView, ViewSyncService};
 $views = app(ViewSyncService::class);
 $view = FieldEqualsView::matching('my-notes', '1', 'owner', $userId, 'notes');
 
-$token = $views->openBootstrap($views->context($tenantId, $view), $view, 100);
-$page = $views->bootstrap($token, $view);
+$context = $views->context($tenantId, $view);
+$token = $views->openBootstrap($context, $view, 100);
+$page = $views->bootstrap($context, $view, $token);
 ```
 
 Bootstrap tokens are stateless by default, so the next page can be served by a

@@ -15,9 +15,14 @@ description: "What the provider binds, and which defaults you should replace."
 | `Contracts\ConflictResolver` | `PreserveConflict` | **you should** |
 | `Contracts\EntityValidator` | `AcceptAll` | **you should** |
 | `Contracts\IdGenerator` | `UuidV7Generator` | rarely |
+| `Contracts\CommitObserver` | `DispatchesSpaceAdvanced` - the `SpaceAdvanced` event, after the outermost commit | yes |
+| `Api\Contracts\SyncableTypes` | the registry built from `sync.api.types` | yes |
+| `Api\Contracts\SyncPrincipals` | `GuardPrincipals` - the authenticated user's id, as both id and `binding` | **you should**, to set a `binding` that changes when permissions do |
+| `Api\Contracts\SyncEndpoints` | `SyncService` | rarely |
 
-The last three are bound with `bindIf`, so registering your own in any provider
-is enough — you do not have to unbind anything.
+The resolver, validator, id generator and commit observer are bound with
+`bindIf`, so registering your own in any provider is enough — you do not have to
+unbind anything.
 
 ## Why those defaults
 

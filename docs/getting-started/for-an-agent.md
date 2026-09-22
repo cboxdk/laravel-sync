@@ -110,9 +110,12 @@ VALUES - the two distinctions that break naive clients
 
 DELTA CHANGES
 - kind "upsert": the record is in your view now, with the version given.
-- kind "remove": the record LEFT YOUR VIEW. That is NOT the same as deleted - it
-  may still exist and someone else may still see it. Remove it from this view's
-  local set; do not assume it is gone.
+- kind "removed_from_scope": the record LEFT YOUR VIEW. That is NOT the same as
+  deleted - it may still exist and someone else may still see it. Remove it from
+  this view's local set; do not assume it is gone. You may be told this about an
+  id you never had; then there is nothing to remove.
+- kind "deleted": the record is gone for good. Drop it everywhere, and never
+  bring it back on an older upsert.
 
 WHEN THE SERVER SAYS reset_required (409)
 - Your local state for that view is no longer valid. Read `reason` if you want
