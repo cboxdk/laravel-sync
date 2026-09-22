@@ -6,6 +6,7 @@ namespace Cbox\Sync\Laravel\Api\Support;
 
 use Cbox\Sync\Data\EntityRecord;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
+use Cbox\Sync\Views\CurrentStateView;
 use Cbox\Sync\Views\QueryableView;
 use Cbox\Sync\Views\ViewDefinition;
 
@@ -31,9 +32,14 @@ class BoundView implements ViewDefinition
             return $view;
         }
 
-        return $view instanceof QueryableView
-            ? new BoundQueryableView($view, $principal->binding)
-            : new self($view, $principal->binding);
+        // Whatever the view is, it stays: a current-state rule that lost that
+        // on the way through judged history by today's row again.
+        return match (true) {
+            $view instanceof QueryableView && $view instanceof CurrentStateView => new BoundQueryableCurrentStateView($view, $principal->binding),
+            $view instanceof QueryableView => new BoundQueryableView($view, $principal->binding),
+            $view instanceof CurrentStateView => new BoundCurrentStateView($view, $principal->binding),
+            default => new self($view, $principal->binding),
+        };
     }
 
     public function id(): string

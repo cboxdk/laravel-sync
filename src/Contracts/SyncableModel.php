@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Cbox\Sync\Laravel\Contracts;
 
+use Illuminate\Database\Eloquent\Model;
+
 /**
  * What the Syncable trait answers about a model.
  *
@@ -43,7 +45,7 @@ interface SyncableModel
      * @param  array<string, mixed>  $values
      * @return array<string, mixed>
      */
-    public function syncNormalize(array $values): array;
+    public function syncNormalize(array $values, ?Model $current = null): array;
 
     /**
      * @template TReturn

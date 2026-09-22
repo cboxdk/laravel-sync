@@ -24,7 +24,11 @@ Requires `cboxdk/sync` 0.9.
 - **The policy's view rule is a current-state rule**: a change it does not show now reaches a device as a removal of the id alone. The content of a row created and deleted since the cursor was sent to devices that could never see it, and a row whose owner changed never left the previous owner's devices.
 - A write whose position the stream has already used skips the permission gates and gets the engine's answer (`receipt_pruned`, `sequence_behind`); a rule that changed since used to refuse it, and the device reused the position for its next write.
 - Device pushes run at READ COMMITTED on MySQL, and the row a write's permission is decided on is locked until the write commits.
-- A synced field a mutator derives from what a device sent is kept; the raw write back used to drop it.
+- A device's value goes through the model's mutator on the row as it stands, so a mutator reading another column sees it rather than null. A mutator that sets other columns is not applied to device writes - derive those in an observer, whose result is echoed to every device.
+- A save or delete an observer vetoes during a device's write is answered 403 `forbidden`, final, instead of a 500 retried for ever.
+- A principal with a `binding` keeps the current-state rule through the binding, so deletes and rows moving to another owner reach its devices.
+- A precondition met in a transaction that rolled back is forgotten under Octane too - the transaction listeners read the current request rather than looking for the recorder in the application container.
+- The space name is checked before its row is created, and the table-refusal mapping recognises prefixed and schema-qualified table names.
 - **A deadlock inside the application's transaction is the application's to retry**: the store runs through Laravel's own `transaction()`, which unwinds its nesting and raises `DeadlockException`. Rolling back to the vanished savepoint used to leave the connection unusable for the rest of the request.
 - The first two writes to a new tenant at the same moment no longer fail on PostgreSQL.
 - **Policies see the real row**, with the synced values laid over it, instead of a model with every non-synced attribute null.

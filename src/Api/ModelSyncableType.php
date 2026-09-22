@@ -227,8 +227,10 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             }
             if ($saved === false) {
                 // An observer vetoed it. Answering "applied" would leave the
-                // log and the table disagreeing; failing rolls both back.
-                throw new \RuntimeException(sprintf('Saving %s %s was cancelled by the application.', $model, $record->entity->id));
+                // log and the table disagreeing; refusing rolls both back -
+                // as final, since the same write meets the same veto, and a
+                // 500 was retried for ever with the device's queue behind it.
+                throw new SyncRequestRejected('The application refused this write', 'forbidden', 403);
             }
         });
 
@@ -281,25 +283,21 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
         if ($values === []) {
             return $mutation;
         }
+        // For an update, through the row as it stands: a mutator reading
+        // another column saw null there, and stored what that made of it.
+        $current = $mutation->kind === MutationKind::Create ? null
+            : ($this->model)::query()->withoutGlobalScopes()->whereKey($mutation->entity->id)->first();
         try {
-            $normalized = $this->prototype->syncNormalize($values);
+            $normalized = $this->prototype->syncNormalize($values, $current);
         } catch (\InvalidArgumentException $invalid) {
             throw new SyncRequestRejected(sprintf('Field "%s" has a value this type cannot hold', $invalid->getMessage()), 'invalid_field_value');
         }
 
         $operations = [];
-        $sent = [];
         foreach ($mutation->operations as $operation) {
-            $sent[] = $operation->field;
             $operations[] = $operation->value->exists && array_key_exists($operation->field, $normalized)
                 ? FieldOperation::set($operation->field, $normalized[$operation->field])
                 : $operation;
-        }
-        foreach ($normalized as $field => $value) {
-            if (! in_array($field, $sent, true)) {
-                // Derived by one of the model's mutators from what was sent.
-                $operations[] = FieldOperation::set($field, $value);
-            }
         }
 
         return $mutation->rebased($mutation->baseVersion, $operations);
@@ -316,8 +314,10 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
      */
     private function unstorable(QueryException $failure, Model $row): ?SyncRequestRejected
     {
-        $table = preg_quote($row->getTable(), '/');
-        if (preg_match('/^\s*(insert\s+into|update)\s+[`"\[]?'.$table.'[`"\]]?[\s(]/i', $failure->getSql()) !== 1) {
+        // The table as the SQL names it: with the connection's prefix, and
+        // possibly schema-qualified.
+        $table = preg_quote($row->getConnection()->getTablePrefix().$row->getTable(), '/');
+        if (preg_match('/^\s*(insert\s+into|update)\s+(?:[`"\[]?\w+[`"\]]?\.)?[`"\[]?'.$table.'[`"\]]?[\s(]/i', $failure->getSql()) !== 1) {
             return null;
         }
         $sqlState = $failure->errorInfo[0] ?? null;
@@ -356,8 +356,9 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             $row = $query->first();
             if ($row !== null && $row->delete() === false) {
                 // An observer vetoed it. The tombstone would be permanent and
-                // the row still there; failing rolls the delete back instead.
-                throw new \RuntimeException(sprintf('Deleting %s %s was cancelled by the application.', $model, $record->entity->id));
+                // the row still there; refusing rolls the delete back, as
+                // final, like a vetoed save.
+                throw new SyncRequestRejected('The application refused this write', 'forbidden', 403);
             }
         });
     }

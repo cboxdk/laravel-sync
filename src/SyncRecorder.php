@@ -215,21 +215,17 @@ class SyncRecorder
         return $versions;
     }
 
-    /** A transaction level on this connection committed; what lived in it now lives in its parent. */
-    public function committed(ConnectionInterface $connection): void
+    /**
+     * A transaction level on this connection committed or rolled back: what
+     * lived in it now lives in its parent, or is gone with it.
+     *
+     * Static, and on the current request, because the state is the request's:
+     * under Octane the recorder may exist only in the request's own container,
+     * and a check for it in the application's missed it, so a precondition met
+     * in a transaction that rolled back stayed met.
+     */
+    public static function settle(?Request $request, ConnectionInterface $connection, bool $keep): void
     {
-        $this->settle($connection, keep: true);
-    }
-
-    /** A transaction level on this connection rolled back, and every precondition met inside it with it. */
-    public function rolledBack(ConnectionInterface $connection): void
-    {
-        $this->settle($connection, keep: false);
-    }
-
-    private function settle(ConnectionInterface $connection, bool $keep): void
-    {
-        $request = $this->request();
         if ($request === null || ! $connection instanceof Connection) {
             return;
         }

@@ -26,6 +26,7 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\Events\TransactionRolledBack;
+use Illuminate\Http\Request;
 use Illuminate\Support\ServiceProvider;
 use Psr\Log\LoggerInterface;
 
@@ -150,16 +151,17 @@ class SyncServiceProvider extends ServiceProvider
     private function trackPreconditions(): void
     {
         $events = $this->app->make(Dispatcher::class);
-        $events->listen(TransactionCommitted::class, function (TransactionCommitted $event): void {
-            if ($this->app->resolved(SyncRecorder::class)) {
-                $this->app->make(SyncRecorder::class)->committed($event->connection);
-            }
-        });
-        $events->listen(TransactionRolledBack::class, function (TransactionRolledBack $event): void {
-            if ($this->app->resolved(SyncRecorder::class)) {
-                $this->app->make(SyncRecorder::class)->rolledBack($event->connection);
-            }
-        });
+        $events->listen(TransactionCommitted::class, static fn (TransactionCommitted $event) => SyncRecorder::settle(self::currentRequest(), $event->connection, keep: true));
+        $events->listen(TransactionRolledBack::class, static fn (TransactionRolledBack $event) => SyncRecorder::settle(self::currentRequest(), $event->connection, keep: false));
+    }
+
+    /** The request being handled now - the sandbox's own under Octane. */
+    private static function currentRequest(): ?Request
+    {
+        // app() is the current container - the sandbox's under Octane.
+        $request = app()->bound('request') ? app('request') : null;
+
+        return $request instanceof Request ? $request : null;
     }
 
     public function boot(): void

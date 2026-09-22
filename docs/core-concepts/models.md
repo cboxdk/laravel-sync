@@ -66,6 +66,15 @@ broken foreign key) rolls the whole write back and is answered 422
 `invalid_field_value`; the database's own message goes to your log, not to the
 device.
 
+A device's value goes through the model's cast and mutator for that field, on
+the row as it stands, so a mutator that reads another column sees it. A mutator
+that also sets OTHER columns is not applied to device writes - the row is written
+in stored form, and a write may not change fields it did not send. Derive those
+in an observer instead: it runs on the write, and what it stores reaches every
+device as the server's own write. An observer that vetoes a device's write (a
+`saving` or `deleting` listener returning false) refuses it as a final 403
+`forbidden`.
+
 An accessor's presentation never reaches the log, a column the database defaulted
 is logged as the value it got, and a date keeps its day whatever the app
 timezone. Sync's own reads and writes of your table ignore global scopes: a row
@@ -105,7 +114,9 @@ The rule can only judge a row as it is now, so a change to a row it does not sho
 now reaches a device as a removal of the id and nothing else - including a row
 deleted since the device last synced, and a row that moved to another owner. A
 device may be told an id it never had has left; it is never sent the content of
-a row it may not see. A change to the rule itself - a user losing access to a
+a row it may not see. The price: every reader in a tenant sees the id, version
+and timing of each change to rows hidden from them - never their fields. Record
+ids here are UUIDs the server chooses, so an id carries no meaning of its own. A change to the rule itself - a user losing access to a
 project - is not a change to any row: bump the principal's `binding` and devices
 rebuild their window under the new rule.
 

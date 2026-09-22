@@ -8,6 +8,7 @@ use Cbox\Sync\Exceptions\InvalidRequest;
 use Cbox\Sync\Exceptions\TransientFailure;
 use Cbox\Sync\Persistence\Pdo\PdoSchema;
 use Cbox\Sync\Persistence\Pdo\PdoStore;
+use Cbox\Sync\ValueObjects\Identifier;
 use Illuminate\Database\Connection;
 use Illuminate\Database\ConnectionInterface;
 
@@ -68,6 +69,9 @@ class IlluminateStore extends PdoStore
         if ($this->active) {
             throw new TransientFailure('Nested or concurrent transaction is unsupported');
         }
+        // Before the row is created, as PdoStore does: INSERT IGNORE would
+        // store an over-long name truncated, as another space.
+        Identifier::check($space, 'space');
         $this->ensureSpace($space);
         $nested = $this->db->transactionLevel() > 0;
         if (! $nested && $this->schema->driver === PdoSchema::MYSQL) {

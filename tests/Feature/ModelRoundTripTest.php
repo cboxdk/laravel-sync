@@ -14,6 +14,7 @@ use Cbox\Sync\Engine;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Contracts\SyncPrincipals;
 use Cbox\Sync\Laravel\Api\GuardPrincipals;
+use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\Laravel\Exceptions\SyncRejected;
 use Cbox\Sync\Laravel\Syncable;
 use Cbox\Sync\Laravel\SyncRecorder;
@@ -21,11 +22,13 @@ use Cbox\Sync\Laravel\Tests\Fixtures\Member;
 use Cbox\Sync\Resolvers\ServerWins;
 use Cbox\Sync\ValueObjects\EntityKey;
 use Cbox\Sync\ValueObjects\Replica;
+use Illuminate\Container\Container;
 use Illuminate\Database\Eloquent\Casts\AsArrayObject;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\Request;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
@@ -563,7 +566,7 @@ it('keeps the record when the application vetoes a device\'s delete', function (
     $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'keep me']])->assertOk()->json('id');
     Card::deleting(fn (): bool => false);
 
-    pushCard($this, 'm2', 2, 'delete', $id, 2, [])->assertStatus(500);
+    pushCard($this, 'm2', 2, 'delete', $id, 2, [])->assertStatus(403)->assertJsonPath('error', 'forbidden');
 
     expect(Card::find($id))->not->toBeNull()
         ->and(logged($id)?->deleted)->toBeFalse();
@@ -605,25 +608,29 @@ it('takes a row away from a device when it stops being theirs', function () {
         ->and(json_encode($changes))->not->toContain('bob now');
 });
 
-/** A mutator that sets a second column did so on the probe and nowhere else: the device's create lost it. */
-it('keeps what a mutator derives from a device\'s value', function () {
+/**
+ * A mutator that reads another column met an empty model when a device's value
+ * was put through it, and stored what it made of the null there - an ordinary
+ * save of the same value would have seen the row.
+ */
+it('puts a device\'s value through the model as the row stands', function () {
     cardsOverApi($this);
-    Card::saving(fn () => null);
     $model = new class extends Card
     {
         protected function title(): Attribute
         {
-            return Attribute::make(set: fn (?string $value): array => ['title' => $value, 'status' => $value === null ? 'open' : 'titled']);
+            return Attribute::make(set: fn (?string $value, array $attributes): string => ($attributes['status'] ?? 'none').': '.$value);
         }
     };
     config()->set('sync.api.types', [$model::class]);
     app()->forgetInstance(SyncableTypes::class);
     Gate::policy($model::class, AllowCards::class);
+    card('m1', ['title' => 'old', 'status' => 'review']);
 
-    $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'x']])->assertOk()->json('id');
+    pushCard($this, 'm1', 1, 'update', 'm1', 1, [['field' => 'title', 'op' => 'set', 'value' => 'new']])->assertOk();
 
-    expect(Card::find($id)?->status)->toBe('titled')
-        ->and(logged($id)?->value('status')->value())->toBe('titled');
+    expect(Card::find('m1')?->title)->toBe('review: new')
+        ->and(Card::find('m1')?->status)->toBe('review');
 });
 
 /**
@@ -715,4 +722,59 @@ it('runs a device push at read committed on MySQL', function () {
     pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'x']])->assertOk();
 
     expect($seen)->toBe('READ COMMITTED');
+});
+
+/**
+ * The binding wrapper dropped the view's current-state nature, so for exactly
+ * the principals whose permissions are expected to change, a delete and a row
+ * moving to another owner reached no device at all.
+ */
+it('still takes deleted and moved rows away from a principal with a binding', function () {
+    cardsOverApi($this);
+    app()->bind(SyncPrincipals::class, fn () => new class implements SyncPrincipals
+    {
+        public function resolve(Request $request): ?SyncPrincipal
+        {
+            return new SyncPrincipal('alice', 'alice:perm-v1');
+        }
+    });
+    card('gone', ['title' => 'x', 'owner_id' => 'alice']);
+    card('moving', ['title' => 'y', 'owner_id' => 'alice']);
+    $cursor = $this->postJson('/sync/bootstrap', ['type' => 'cards', 'scope' => 'owners', 'page_size' => 10])->assertOk()->json('cursor');
+
+    Card::find('gone')?->delete();
+    Card::find('moving')?->forceFill(['owner_id' => 'bob', 'title' => 'bob now'])->save();
+
+    $kinds = [];
+    foreach ($this->postJson('/sync/delta', ['type' => 'cards', 'scope' => 'owners', 'cursor' => $cursor])->assertOk()->json('commits') as $commit) {
+        foreach ($commit['changes'] as $change) {
+            $kinds[] = [$change['id'] ?? null, $change['kind']];
+        }
+    }
+
+    expect($kinds)->toContain(['gone', 'deleted'])
+        ->and($kinds)->toContain(['moving', 'removed_from_scope']);
+});
+
+/**
+ * Under Octane the request lives in a per-request container. The listeners
+ * checked the application's for the recorder, found nothing, and a
+ * precondition met in a transaction that rolled back stayed met.
+ */
+it('forgets a precondition met in a rolled-back transaction, whatever container holds the request', function () {
+    $request = Request::create('/api/cards/x', 'PUT');
+    $request->attributes->set('sync.precondition_held.'.Card::class.':x', ['sync-testing', 1]);
+    $application = app();
+    $sandbox = clone $application;
+    $sandbox->instance('request', $request);
+    Container::setInstance($sandbox);
+
+    try {
+        DB::connection('sync-testing')->beginTransaction();
+        DB::connection('sync-testing')->rollBack();
+    } finally {
+        Container::setInstance($application);
+    }
+
+    expect($request->attributes->has('sync.precondition_held.'.Card::class.':x'))->toBeFalse();
 });

@@ -283,8 +283,8 @@ it('rolls the write back when the application cancels saving the row', function 
     $this->actingAs(member('alice', 'owners'));
     Note::saving(fn (): bool => false);
 
-    $this->withoutExceptionHandling();
-    expect(fn () => pushNote())->toThrow(RuntimeException::class, 'cancelled by the application');
+    // Final, not a 500 the device retries for ever with its queue behind it.
+    pushNote()->assertStatus(403)->assertJsonPath('error', 'forbidden');
 
     expect(app(Store::class)->receipt(IdentityBinding::mutationId(new SyncPrincipal('alice', 'alice'), 'm1')))->toBeNull();
 });

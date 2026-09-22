@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Casts\AsArrayObject;
 use Illuminate\Database\Eloquent\Casts\AsCollection;
 use Illuminate\Database\Eloquent\Casts\AsEnumArrayObject;
 use Illuminate\Database\Eloquent\Casts\AsEnumCollection;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 
@@ -333,14 +334,22 @@ trait Syncable
      * form a server-side save of those values would log. A value the model
      * cannot take - an unknown enum case, a date that is not one - is refused.
      *
+     * $current is the row the values are being written to, for an update: a
+     * mutator that reads another column must see that column as it is, not
+     * as the null an empty model holds.
+     *
      * @param  array<string, mixed>  $values
      * @return array<string, mixed>
      *
      * @throws \InvalidArgumentException naming the field that could not be taken
      */
-    public function syncNormalize(array $values): array
+    public function syncNormalize(array $values, ?Model $current = null): array
     {
         $probe = $this->newInstance();
+        if ($current !== null) {
+            $probe->setRawAttributes($current->getAttributes(), true);
+            $probe->exists = true;
+        }
         foreach ($values as $field => $value) {
             try {
                 // A number that is not one, or that no column can hold, is
@@ -364,20 +373,7 @@ trait Syncable
             }
         }
 
-        // And any synced field a mutator derived from them: a title mutator
-        // that also sets the slug. The row is written raw, past mutators, so a
-        // value not carried here would never reach it - an ordinary save of
-        // the same input would have stored it.
-        $clean = $this->newInstance()->getAttributes();
-        $fields = array_keys($values);
-        foreach ($probe->getAttributes() as $field => $value) {
-            if (! in_array($field, $fields, true) && in_array($field, $this->syncFields(), true)
-                && (! array_key_exists($field, $clean) || $clean[$field] !== $value)) {
-                $fields[] = $field;
-            }
-        }
-
-        return $probe->syncValues($fields);
+        return $probe->syncValues(array_keys($values));
     }
 
     /**
