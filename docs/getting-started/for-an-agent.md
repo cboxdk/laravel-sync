@@ -37,9 +37,10 @@ WRITING
   `device-7/tasks/team-1`), each with its own counter. The server numbers per
   replica per space, and several scopes can map to one space; sharing a counter
   across them makes writes collide.
-- If you get `mutation_gap` with an `acknowledged_sequence` LOWER than you
-  expected, the server is behind you (restored from a backup). Set your counter
-  to exactly that value and continue; nothing you still hold is lost.
+- On `mutation_gap`, set your counter to EXACTLY `acknowledged_sequence` -
+  lower or higher than you had - and resend. Lower: the server was restored from
+  a backup. Higher (reason `sequence_behind`): your device was. Nothing you
+  still hold is lost.
 - 401 means the session expired. Keep the queue; sign in again and resend.
 - Assign `sequence` when you SEND, not when you queue. A mutation that never
   reaches the server must not consume a number, or the server waits for it
