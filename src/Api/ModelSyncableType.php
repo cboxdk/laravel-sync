@@ -24,6 +24,7 @@ use Illuminate\Contracts\Auth\Access\Gate;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 
 /**
  * Serves an Eloquent model over the sync API using the application's own policy.
@@ -121,11 +122,11 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             // One that cannot even evaluate hides the row rather than failing
             // the whole page for everyone in the tenant.
             function (EntityRecord $record) use ($gate): bool {
-                // A row that is gone has nothing left to hide but its id - and
-                // judging it as a model of nulls hid the delete itself, so the
-                // owner's other devices kept a row that no longer exists.
+                // A row that is gone cannot be judged, so none of its content
+                // goes out; that it left still does, as an id - PolicyView
+                // judges the row as it is now.
                 if (! $this->rowExists($record)) {
-                    return true;
+                    return false;
                 }
                 try {
                     return $gate->allows('view', $this->hydrate($record));
@@ -164,7 +165,7 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             return $gate->allows('create', $this->model);
         }
 
-        return $gate->allows($kind === MutationKind::Delete ? 'delete' : 'update', $this->hydrate($record));
+        return $gate->allows($kind === MutationKind::Delete ? 'delete' : 'update', $this->hydrate($record, lock: true));
     }
 
     /**
@@ -219,7 +220,12 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             // and mutators: the log holds what the column holds, so writing it
             // back is exact.
             $row->syncFill($attributes + [$row->getKeyName() => $record->entity->id]);
-            if ($row->save() === false) {
+            try {
+                $saved = $row->save();
+            } catch (QueryException $refused) {
+                throw $this->unstorable($refused, $row) ?? $refused;
+            }
+            if ($saved === false) {
                 // An observer vetoed it. Answering "applied" would leave the
                 // log and the table disagreeing; failing rolls both back.
                 throw new \RuntimeException(sprintf('Saving %s %s was cancelled by the application.', $model, $record->entity->id));
@@ -243,7 +249,9 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             // agrees already.
             $drift = [];
             foreach ($stored->syncValues($this->prototype->syncFields()) as $field => $value) {
-                if ($value === null && ! array_key_exists($field, $record->fields)) {
+                // NULL is how a table holds "no value": the log agrees when it
+                // never held the field, or holds it unset.
+                if ($value === null && ! $record->value($field)->exists) {
                     continue;
                 }
                 if (! FieldValue::of($value)->equals($record->value($field))) {
@@ -280,13 +288,47 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
         }
 
         $operations = [];
+        $sent = [];
         foreach ($mutation->operations as $operation) {
+            $sent[] = $operation->field;
             $operations[] = $operation->value->exists && array_key_exists($operation->field, $normalized)
                 ? FieldOperation::set($operation->field, $normalized[$operation->field])
                 : $operation;
         }
+        foreach ($normalized as $field => $value) {
+            if (! in_array($field, $sent, true)) {
+                // Derived by one of the model's mutators from what was sent.
+                $operations[] = FieldOperation::set($field, $value);
+            }
+        }
 
         return $mutation->rebased($mutation->baseVersion, $operations);
+    }
+
+    /**
+     * A value this row's own table refuses - too long, out of range, NULL in
+     * a NOT NULL column, a broken foreign key. The whole write rolls back and
+     * sending it again changes nothing, so it is final for the device, where a
+     * 500 was retried for ever. Only for the row's OWN insert or update: a
+     * unique race in an observer's write to another table is not the device's
+     * value, and the database's message - it names tables and columns - goes
+     * to the log, not to the device.
+     */
+    private function unstorable(QueryException $failure, Model $row): ?SyncRequestRejected
+    {
+        $table = preg_quote($row->getTable(), '/');
+        if (preg_match('/^\s*(insert\s+into|update)\s+[`"\[]?'.$table.'[`"\]]?[\s(]/i', $failure->getSql()) !== 1) {
+            return null;
+        }
+        $sqlState = $failure->errorInfo[0] ?? null;
+        $state = is_string($sqlState) ? $sqlState : (string) $failure->getCode();
+        $driverCode = $failure->errorInfo[1] ?? null;
+        if (! str_starts_with($state, '22') && ! str_starts_with($state, '23') && $driverCode !== 1364) {
+            return null;
+        }
+        report($failure);
+
+        return new SyncRequestRejected('The application could not store a value in this write', 'invalid_field_value');
     }
 
     /** The tenant back out of the space this type built in space(). */
@@ -311,7 +353,12 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             if ($column !== null) {
                 $query->where($column, $this->scopeOf($record->entity->space));
             }
-            $query->first()?->delete();
+            $row = $query->first();
+            if ($row !== null && $row->delete() === false) {
+                // An observer vetoed it. The tombstone would be permanent and
+                // the row still there; failing rolls the delete back instead.
+                throw new \RuntimeException(sprintf('Deleting %s %s was cancelled by the application.', $model, $record->entity->id));
+            }
         });
     }
 
@@ -343,12 +390,19 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
      * synced values on top, because they are what the engine is about to merge
      * into, and the table can be behind them while a write is in flight.
      */
-    private function hydrate(EntityRecord $record): Model
+    private function hydrate(EntityRecord $record, bool $lock = false): Model
     {
         $column = $this->prototype->syncScopeColumn();
         $query = ($this->model)::query()->withoutGlobalScopes()->whereKey($record->entity->id);
         if ($column !== null) {
             $query->where($column, $this->scopeOf($record->entity->space));
+        }
+        if ($lock) {
+            // For a write: the row as it is now, held until the write commits,
+            // so a column the rule reads - an owner, a lock flag - cannot
+            // change between the decision and the write, and a snapshot older
+            // than the decision cannot make it.
+            $query->lockForUpdate();
         }
         $row = $query->first();
         // A fresh instance of the registered model carrying the row, so the

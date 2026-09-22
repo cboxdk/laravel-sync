@@ -102,6 +102,19 @@ class IlluminateStore extends PdoStore
         }
     }
 
+    /**
+     * Start the connection's next top-level transaction at READ COMMITTED on
+     * MySQL, as the store's own are - for a transaction the package opens
+     * around the store and the application's table together. Nothing inside
+     * a transaction already open, whose isolation is the host's.
+     */
+    public function readCommitted(): void
+    {
+        if ($this->db->transactionLevel() === 0 && $this->schema->driver === PdoSchema::MYSQL) {
+            $this->connection()->exec('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        }
+    }
+
     protected function needsLockingReads(): bool
     {
         return $this->nested;

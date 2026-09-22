@@ -1,8 +1,10 @@
 <?php
 
 declare(strict_types=1);
+use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\Mutation;
 use Cbox\Sync\Engine;
+use Cbox\Sync\ValueObjects\CommitSequence;
 use Illuminate\Testing\TestResponse;
 
 /**
@@ -66,4 +68,22 @@ it('re-checks authorization inside the transaction, not only in front of it', fu
 
     $bootstrap = $this->postJson('/sync/bootstrap', ['type' => 'racing', 'scope' => 'team-1'], ['X-Test-Principal' => 'alice']);
     expect($bootstrap->json('records.0.fields.name.value'))->toBe('contested');
+});
+
+/**
+ * A replay past the retention window has no receipt to be answered from, and
+ * the policy - which now sees a tombstone - refused it before the engine could
+ * say receipt_pruned. The device never learned where its stream was, and its
+ * next new write reused the position and was refused too.
+ */
+it('lets the engine answer a replay whose receipt was pruned, whatever the policy says now', function () {
+    pushFile($this, fileMutation('f1', 1, 'create', 0, [setOp('name', 'notes.txt'), setOp('state', 'live')]))->assertOk();
+    pushFile($this, fileMutation('f1', 2, 'delete', 1))->assertOk();
+    pushFile($this, fileMutation('f2', 3, 'create', 0, [setOp('name', 'other.txt'), setOp('state', 'live')]))->assertOk();
+    app(Store::class)->prune('team-1', new CommitSequence(3));
+
+    pushFile($this, fileMutation('f1', 2, 'delete', 1))
+        ->assertOk()
+        ->assertJsonPath('status', 'receipt_pruned')
+        ->assertJsonPath('acknowledged_sequence', 3);
 });

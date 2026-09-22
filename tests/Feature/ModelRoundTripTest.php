@@ -2,9 +2,11 @@
 
 declare(strict_types=1);
 
+use Cbox\Sync\Contracts\ConflictResolver;
 use Cbox\Sync\Contracts\EntityValidator;
 use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\EntityRecord;
+use Cbox\Sync\Data\FieldOperation;
 use Cbox\Sync\Data\ValidationContext;
 use Cbox\Sync\Data\ValidationFailure;
 use Cbox\Sync\Data\ValidationResult;
@@ -16,12 +18,16 @@ use Cbox\Sync\Laravel\Exceptions\SyncRejected;
 use Cbox\Sync\Laravel\Syncable;
 use Cbox\Sync\Laravel\SyncRecorder;
 use Cbox\Sync\Laravel\Tests\Fixtures\Member;
+use Cbox\Sync\Resolvers\ServerWins;
 use Cbox\Sync\ValueObjects\EntityKey;
+use Cbox\Sync\ValueObjects\Replica;
 use Illuminate\Database\Eloquent\Casts\AsArrayObject;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Routing\Middleware\SubstituteBindings;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
@@ -505,3 +511,208 @@ it('refuses a number that is not one', function (string $field, mixed $value) {
     pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => $field, 'op' => 'set', 'value' => $value]])
         ->assertStatus(422)->assertJsonPath('error', 'invalid_field_value');
 })->with([['priority', 'abc'], ['amount', '1e400'], ['amount', 'twelve']]);
+
+/**
+ * What the table makes of a device's write - a defaulted column - is logged one
+ * version later. The device's next edit, queued offline behind its create or
+ * based on the version its answer gave, used to conflict with that echo of its
+ * own write and wait in a conflict group.
+ */
+it('counts the table\'s echo of a device\'s write as that device\'s own', function () {
+    cardsOverApi($this);
+    $created = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'x']])->assertOk();
+    $id = $created->json('id');
+
+    $this->postJson('/sync/push', [
+        'type' => 'cards', 'scope' => 'owners', 'mutation_id' => 'm2', 'id' => $id, 'replica' => 'device',
+        'sequence' => 2, 'kind' => 'update', 'base_version' => 0, 'depends_on' => 'm1',
+        'operations' => [['field' => 'status', 'op' => 'set', 'value' => 'done']],
+    ])->assertOk()->assertJsonPath('status', 'applied');
+
+    expect($created->json('record_version'))->toBe(2)
+        ->and(Card::find($id)?->status)->toBe('done');
+});
+
+/** An unset field is NULL in the table and absent in the log - the same thing, not an echo. */
+it('does not echo a field the device unset', function () {
+    cardsOverApi($this);
+    $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'x']])->assertOk()->json('id');
+    $unset = pushCard($this, 'm2', 2, 'update', $id, 2, [['field' => 'title', 'op' => 'unset']])->assertOk();
+
+    pushCard($this, 'm3', 3, 'update', $id, $unset->json('record_version'), [['field' => 'title', 'op' => 'set', 'value' => 'y']])
+        ->assertOk()->assertJsonPath('status', 'applied');
+    expect($unset->json('record_version'))->toBe(3)
+        ->and(logged($id)?->version->value)->toBe(4);
+});
+
+/** A row from before the model was synced is logged whole on its first save, not as the field that changed. */
+it('logs a row that predates syncing whole on its first save', function () {
+    Card::withoutSyncing(fn () => card('legacy', ['title' => 'old', 'status' => 'review', 'priority' => 2]));
+    expect(logged('legacy'))->toBeNull();
+
+    Card::find('legacy')?->update(['title' => 'new']);
+
+    expect(logged('legacy')?->value('title')->value())->toBe('new')
+        ->and(logged('legacy')?->value('status')->value())->toBe('review')
+        ->and(logged('legacy')?->value('priority')->value())->toBe(2);
+});
+
+/** A delete an observer vetoes used to be answered "applied", with the tombstone committed and the row still there. */
+it('keeps the record when the application vetoes a device\'s delete', function () {
+    cardsOverApi($this);
+    $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'keep me']])->assertOk()->json('id');
+    Card::deleting(fn (): bool => false);
+
+    pushCard($this, 'm2', 2, 'delete', $id, 2, [])->assertStatus(500);
+
+    expect(Card::find($id))->not->toBeNull()
+        ->and(logged($id)?->deleted)->toBeFalse();
+});
+
+/**
+ * A private row created and deleted since a device's cursor was sent to it
+ * with its content, because a row that is gone was judged visible. Now only
+ * its id leaves.
+ */
+it('never sends the content of a row the device may not see, even once it is gone', function () {
+    cardsOverApi($this);
+    $cursor = $this->postJson('/sync/bootstrap', ['type' => 'cards', 'scope' => 'owners', 'page_size' => 10])->assertOk()->json('cursor');
+    card('secret', ['title' => 'the secret plan', 'owner_id' => 'bob']);
+    Card::find('secret')?->delete();
+
+    $delta = $this->postJson('/sync/delta', ['type' => 'cards', 'scope' => 'owners', 'cursor' => $cursor])->assertOk();
+
+    expect($delta->getContent())->not->toContain('the secret plan');
+});
+
+/** A row whose owner changed left the previous owner's devices only as a removal nobody sent. */
+it('takes a row away from a device when it stops being theirs', function () {
+    cardsOverApi($this);
+    card('moving', ['title' => 'mine', 'owner_id' => 'alice']);
+    $cursor = $this->postJson('/sync/bootstrap', ['type' => 'cards', 'scope' => 'owners', 'page_size' => 10])->assertOk()->json('cursor');
+
+    $row = Card::find('moving') ?? throw new LogicException('expected the row');
+    $row->forceFill(['owner_id' => 'bob', 'title' => 'bob now'])->save();
+
+    $changes = [];
+    foreach ($this->postJson('/sync/delta', ['type' => 'cards', 'scope' => 'owners', 'cursor' => $cursor])->assertOk()->json('commits') as $commit) {
+        foreach ($commit['changes'] as $change) {
+            $changes[] = [$change['id'] ?? $change['entity']['id'] ?? null, $change['kind'], isset($change['record'])];
+        }
+    }
+
+    expect($changes)->toContain(['moving', 'removed_from_scope', false])
+        ->and(json_encode($changes))->not->toContain('bob now');
+});
+
+/** A mutator that sets a second column did so on the probe and nowhere else: the device's create lost it. */
+it('keeps what a mutator derives from a device\'s value', function () {
+    cardsOverApi($this);
+    Card::saving(fn () => null);
+    $model = new class extends Card
+    {
+        protected function title(): Attribute
+        {
+            return Attribute::make(set: fn (?string $value): array => ['title' => $value, 'status' => $value === null ? 'open' : 'titled']);
+        }
+    };
+    config()->set('sync.api.types', [$model::class]);
+    app()->forgetInstance(SyncableTypes::class);
+    Gate::policy($model::class, AllowCards::class);
+
+    $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'x']])->assertOk()->json('id');
+
+    expect(Card::find($id)?->status)->toBe('titled')
+        ->and(logged($id)?->value('status')->value())->toBe('titled');
+});
+
+/**
+ * A save that met its If-Match marked the request as done checking. When the
+ * host's transaction rolled back and retried, the retry skipped the check and
+ * overwrote a version another writer had committed in between.
+ */
+it('checks If-Match again when the transaction that met it rolls back', function () {
+    card('p1', ['title' => 'v1']);
+    $attempts = 0;
+    Route::middleware(SubstituteBindings::class)->put('/api/cards/{card}/retried', function (Card $card) use (&$attempts) {
+        DB::transaction(function () use ($card, &$attempts): void {
+            $attempts++;
+            if ($attempts === 2) {
+                // Someone else's write lands between the attempts.
+                app(Engine::class)->recordTrusted(new EntityKey('cards:owners', 'cards', 'p1'), new Replica('server'), [FieldOperation::set('title', 'theirs')], false);
+            }
+            $card->title = 'mine '.$attempts;
+            $card->save();
+            if ($attempts === 1) {
+                $deadlock = new PDOException('Deadlock found when trying to get lock');
+                $deadlock->errorInfo = ['40001', 1213, 'Deadlock found when trying to get lock'];
+
+                throw new QueryException('sync-testing', 'update cards', [], $deadlock);
+            }
+        }, 2);
+
+        return response()->json(['ok' => true]);
+    });
+
+    $this->putJson('/api/cards/p1/retried', [], ['If-Match' => '"1"'])->assertStatus(412);
+    expect($attempts)->toBe(2);
+});
+
+/**
+ * With ServerWins the engine keeps the stored value and answers noop - and the
+ * save that lost had already written its own value to the table, answered 200,
+ * and left table and log disagreeing for good.
+ */
+it('answers a stale save the resolver keeps the server\'s value for as a conflict', function () {
+    app()->instance(ConflictResolver::class, new ServerWins);
+    app()->forgetInstance(Engine::class);
+    app()->forgetInstance(SyncRecorder::class);
+    Route::middleware(SubstituteBindings::class)->put('/api/cards/{card}/stale', function (Card $card) {
+        $card->update(request()->only(['title']));
+
+        return response()->json(['ok' => true]);
+    });
+    $card = card('sw', ['title' => 'first']);
+    $card->update(['title' => 'theirs']);
+
+    $this->putJson('/api/cards/sw/stale', ['title' => 'mine', 'base_version' => 1])->assertStatus(409);
+
+    expect(Card::find('sw')?->title)->toBe('theirs')
+        ->and(logged('sw')?->value('title')->value())->toBe('theirs');
+});
+
+/**
+ * A unique race in an observer's write to ANOTHER table is not the device's
+ * value; answering it 422 told the device to drop a valid edit for good.
+ */
+it('does not call an observer\'s own constraint failure the device\'s bad value', function () {
+    cardsOverApi($this);
+    Schema::create('card_audit', function (Blueprint $table) {
+        $table->string('id')->primary();
+    });
+    DB::table('card_audit')->insert(['id' => 'taken']);
+    Card::saved(fn () => DB::table('card_audit')->insert(['id' => 'taken']));
+
+    $response = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'fine']]);
+    Schema::dropIfExists('card_audit');
+
+    expect($response->status())->toBe(500)
+        ->and(Card::query()->count())->toBe(0);
+});
+
+/** A device's push is the package's own transaction, and on MySQL it runs at READ COMMITTED like the store's. */
+it('runs a device push at read committed on MySQL', function () {
+    if (config('database.connections.sync-testing.driver') !== 'mysql') {
+        $this->markTestSkipped('The isolation level is MySQL\'s.');
+    }
+    cardsOverApi($this);
+    $seen = null;
+    Card::saving(function () use (&$seen): void {
+        // The running transaction's level; the session variable shows the default.
+        $seen = DB::connection('sync-testing')->selectOne('SELECT trx_isolation_level AS level FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID()')->level;
+    });
+
+    pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'x']])->assertOk();
+
+    expect($seen)->toBe('READ COMMITTED');
+});

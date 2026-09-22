@@ -364,7 +364,20 @@ trait Syncable
             }
         }
 
-        return $probe->syncValues(array_keys($values));
+        // And any synced field a mutator derived from them: a title mutator
+        // that also sets the slug. The row is written raw, past mutators, so a
+        // value not carried here would never reach it - an ordinary save of
+        // the same input would have stored it.
+        $clean = $this->newInstance()->getAttributes();
+        $fields = array_keys($values);
+        foreach ($probe->getAttributes() as $field => $value) {
+            if (! in_array($field, $fields, true) && in_array($field, $this->syncFields(), true)
+                && (! array_key_exists($field, $clean) || $clean[$field] !== $value)) {
+                $fields[] = $field;
+            }
+        }
+
+        return $probe->syncValues($fields);
     }
 
     /**

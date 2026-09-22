@@ -24,6 +24,8 @@ use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\ServiceProvider;
 use Psr\Log\LoggerInterface;
 
@@ -115,6 +117,9 @@ class SyncServiceProvider extends ServiceProvider
             $app->make(CommitObserver::class),
         ));
 
+        // One per application, so the echo a device write is being recorded
+        // under is seen by the model saves it triggers.
+        $this->app->singleton(SyncRecorder::class);
         $this->app->singleton(BootstrapSessions::class, function (Application $app): BootstrapSessions {
             $store = $app->make(Store::class);
             if ($this->setting($app, 'sync.bootstrap.strategy') === 'frozen') {
@@ -136,9 +141,31 @@ class SyncServiceProvider extends ServiceProvider
         ));
     }
 
+    /**
+     * A precondition a request met lives as long as the transaction level it
+     * was met in. Only once the recorder exists: nothing can have been met
+     * before, and resolving it on every commit would open the sync store's
+     * connection for applications that never touch it.
+     */
+    private function trackPreconditions(): void
+    {
+        $events = $this->app->make(Dispatcher::class);
+        $events->listen(TransactionCommitted::class, function (TransactionCommitted $event): void {
+            if ($this->app->resolved(SyncRecorder::class)) {
+                $this->app->make(SyncRecorder::class)->committed($event->connection);
+            }
+        });
+        $events->listen(TransactionRolledBack::class, function (TransactionRolledBack $event): void {
+            if ($this->app->resolved(SyncRecorder::class)) {
+                $this->app->make(SyncRecorder::class)->rolledBack($event->connection);
+            }
+        });
+    }
+
     public function boot(): void
     {
         $this->app->register(Api\ApiServiceProvider::class);
+        $this->trackPreconditions();
         $this->registerWebhookDelivery();
         $this->registerBroadcasting();
 

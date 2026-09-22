@@ -6,6 +6,7 @@ namespace Cbox\Sync\Laravel\Api\Support;
 
 use Cbox\Sync\Data\EntityRecord;
 use Cbox\Sync\Data\RecordCriteria;
+use Cbox\Sync\Views\CurrentStateView;
 use Cbox\Sync\Views\QueryableView;
 
 /**
@@ -19,15 +20,19 @@ use Cbox\Sync\Views\QueryableView;
  * The rule is asked about the real row, with sync's values over it, so a rule
  * reading a column devices never see still hides what it hides on REST. That
  * costs a read per row judged - remembered for the life of the view, so a row
- * judged before and after a change in one delta is read once. A row that no
- * longer exists is visible: its delete is all there is left to send.
+ * judged before and after a change in one delta is read once.
+ *
+ * The rule can only judge the row as it is now, so this is a current-state
+ * view: a change it does not show now reaches a device as a removal of the id
+ * and nothing else. A row deleted since, or moved to another owner, leaves the
+ * devices that had it without its content going to anyone who never could.
  *
  * The rule's answer is folded into membership when a row changes. A change to
  * the rule itself - a user losing access to a project - is not a change to any
  * row, so it reaches devices through SyncPrincipal::$binding, which makes them
  * rebuild their window under the new rule.
  */
-class PolicyView implements QueryableView
+class PolicyView implements CurrentStateView, QueryableView
 {
     /** @param \Closure(EntityRecord): bool $allows */
     public function __construct(
@@ -54,6 +59,11 @@ class PolicyView implements QueryableView
     public function criteria(): RecordCriteria
     {
         return $this->view->criteria();
+    }
+
+    public function spans(EntityRecord $record): bool
+    {
+        return $this->view->includes($record);
     }
 
     /** @var array<string, bool> the rule's answer per record version */

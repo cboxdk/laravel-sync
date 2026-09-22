@@ -8,6 +8,7 @@ use Cbox\Sync\Data\AdapterContext;
 use Cbox\Sync\Data\FieldOperation;
 use Cbox\Sync\Data\Mutation;
 use Cbox\Sync\Engine;
+use Cbox\Sync\Enums\ConflictDecision;
 use Cbox\Sync\Enums\MutationStatus;
 use Cbox\Sync\Enums\OnConflict;
 use Cbox\Sync\Laravel\Contracts\SyncableModel;
@@ -16,6 +17,8 @@ use Cbox\Sync\Laravel\Exceptions\SyncRejected;
 use Cbox\Sync\ValueObjects\EntityKey;
 use Cbox\Sync\ValueObjects\Replica;
 use Illuminate\Contracts\Auth\Factory as AuthFactory;
+use Illuminate\Database\Connection;
+use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Route;
@@ -40,6 +43,30 @@ class SyncRecorder
         private readonly Engine $engine,
         private readonly AuthFactory $auth,
     ) {}
+
+    /** The device write whose read-back is being recorded, while it is. */
+    private ?string $echoing = null;
+
+    /**
+     * Record what follows as the table's echo of a device's write: its
+     * versions become that write's own, so the device's next edit does not
+     * conflict with it.
+     *
+     * @template TResult
+     *
+     * @param  \Closure(): TResult  $callback
+     * @return TResult
+     */
+    public function echoing(string $mutationId, \Closure $callback): mixed
+    {
+        $previous = $this->echoing;
+        $this->echoing = $mutationId;
+        try {
+            return $callback();
+        } finally {
+            $this->echoing = $previous;
+        }
+    }
 
     /**
      * @param  list<string>  $changed  the fields this write set
@@ -67,6 +94,14 @@ class SyncRecorder
         foreach ($model->syncValues($fields) as $field => $value) {
             $operations[] = FieldOperation::set($field, $value);
         }
+        // Everything, if the log turns out never to have held this record: a
+        // row that existed before the model was synced would otherwise be
+        // logged as the one field its first save changed, and devices would
+        // get it without the rest.
+        $whole = [];
+        foreach ($model->syncValues($model->syncFields()) as $field => $value) {
+            $whole[] = FieldOperation::set($field, $value);
+        }
 
         // A version the caller named applies to the model it was talking
         // about - the one the route bound - and to nothing else saved while
@@ -77,7 +112,7 @@ class SyncRecorder
         // record are its own work, not a race - checking again answered 412
         // with the first save already committed.
         $marker = 'sync.precondition_held.'.$model::class.':'.$entity->id;
-        $held = $this->request()?->attributes->get($marker) === true;
+        $held = is_array($this->request()?->attributes->get($marker));
         $ifMatch = $concerned && ! $held ? $this->ifMatch() : null;
         $base = $concerned && ! $held ? $this->claimedBase() : null;
 
@@ -98,9 +133,17 @@ class SyncRecorder
             // with nothing kept - not with a candidate waiting in a group for a
             // choice nobody will be asked to make.
             OnConflict::Pull,
+            $deleting ? null : $whole,
+            $this->echoing,
         );
         if ($result === null) {
             return;
+        }
+        if (in_array(ConflictDecision::Server, $result->decisions, true)) {
+            // The resolver kept the stored value over this save's - the table
+            // is about to hold the value that lost. Answered as the conflict it
+            // is, and the save rolls back with it.
+            throw SyncConflict::from($result);
         }
 
         match ($result->status) {
@@ -109,7 +152,15 @@ class SyncRecorder
             default => null,
         };
         if ($concerned && ($ifMatch !== null || $base !== null)) {
-            $this->request()?->attributes->set($marker, true);
+            // Only while this save stands: the transaction level it lives at,
+            // moved down as levels commit and dropped when one below it rolls
+            // back - a deadlock the host retries has to meet the precondition
+            // again, against whatever committed in between. Tracked from the
+            // connection's own events, which fire at every level on every
+            // supported Laravel; a rollback callback registered in a nested
+            // transaction that had already committed never ran on Laravel 12.
+            $connection = $model->getConnection();
+            $this->request()?->attributes->set($marker, [$connection->getName(), $connection->transactionLevel()]);
         }
     }
 
@@ -162,6 +213,35 @@ class SyncRecorder
         }
 
         return $versions;
+    }
+
+    /** A transaction level on this connection committed; what lived in it now lives in its parent. */
+    public function committed(ConnectionInterface $connection): void
+    {
+        $this->settle($connection, keep: true);
+    }
+
+    /** A transaction level on this connection rolled back, and every precondition met inside it with it. */
+    public function rolledBack(ConnectionInterface $connection): void
+    {
+        $this->settle($connection, keep: false);
+    }
+
+    private function settle(ConnectionInterface $connection, bool $keep): void
+    {
+        $request = $this->request();
+        if ($request === null || ! $connection instanceof Connection) {
+            return;
+        }
+        $level = $connection->transactionLevel();
+        foreach ($request->attributes->all() as $key => $held) {
+            if (! str_starts_with($key, 'sync.precondition_held.') || ! is_array($held) || ($held[0] ?? null) !== $connection->getName()) {
+                continue;
+            }
+            if (($held[1] ?? 0) > $level) {
+                $keep ? $request->attributes->set($key, [$held[0], $level]) : $request->attributes->remove($key);
+            }
+        }
     }
 
     /** Whether this is the model the current route is about. */

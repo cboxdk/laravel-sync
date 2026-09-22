@@ -32,6 +32,7 @@ use Cbox\Sync\Laravel\Api\Support\ResultMapper;
 use Cbox\Sync\Laravel\Api\Support\ViewMapper;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\Laravel\IlluminateStore;
+use Cbox\Sync\Laravel\SyncRecorder;
 use Cbox\Sync\Observers\NullCommitObserver;
 use Cbox\Sync\ValueObjects\EntityKey;
 use Cbox\Sync\ValueObjects\Identifier;
@@ -92,7 +93,14 @@ class SyncService implements SyncEndpoints
         // Before the engine, always. A mutation id that reaches it is
         // acknowledged forever, so a refusal afterwards would leave the client
         // unable to retry that id ever again.
-        if (! $type->mayWrite($principal, $this->store->record($mutation->entity), $mutation->kind)) {
+        //
+        // Except for a position the stream has already used: the engine
+        // answers that without applying anything - a replay whose receipt was
+        // pruned, a writer that fell behind - and only its answer tells the
+        // device where to go on. Refused here by a rule that changed since, the
+        // device never learned it, and its next write reused the position.
+        $used = $mutation->sequence->value <= $this->store->acknowledged($space, $mutation->replica);
+        if (! $used && ! $type->mayWrite($principal, $this->store->record($mutation->entity), $mutation->kind)) {
             throw SyncRequestRejected::forbidden();
         }
         $this->assertOneConnection($type);
@@ -114,14 +122,20 @@ class SyncService implements SyncEndpoints
         // worse than either being wrong alone.
         $onConflict = self::onConflict($body);
         $apply = function () use ($engine, $mutation, $principal, $type, $onConflict): MutationResult {
-            $result = $engine->process($mutation, new AdapterContext($principal->id, $principal->integrationId), $onConflict);
-            // Only a write that changed the record reaches the table. A noop, a
-            // conflict or a refusal left it as it was, and writing it again
-            // anyway fired the application's saved observers for nothing.
-            if ($type instanceof PersistsRecords && in_array($result->status, [MutationStatus::Applied, MutationStatus::Partial], true)) {
+            $submission = $engine->submit($mutation, new AdapterContext($principal->id, $principal->integrationId), $onConflict);
+            $result = $submission->result;
+            // Only a write that changed the record reaches the table, and only
+            // from the call that wrote it. A noop, a conflict or a refusal left
+            // it as it was; a replay racing the first delivery found its
+            // receipt inside the lock, and writing the table again ran the
+            // application's observers twice for one write.
+            if ($type instanceof PersistsRecords && $submission->wrote() && in_array($result->status, [MutationStatus::Applied, MutationStatus::Partial], true)) {
                 $settled = $this->store->record($mutation->entity);
                 if ($settled !== null) {
-                    $settled->deleted ? $type->forget($settled) : $type->persist($settled);
+                    // What the table makes of it is recorded as this write's
+                    // echo, and its versions become part of this write's answer.
+                    app(SyncRecorder::class)->echoing($mutation->id, fn () => $settled->deleted ? $type->forget($settled) : $type->persist($settled));
+                    $result = $this->store->receipt($mutation->id)->result ?? $result;
                 }
             }
 
@@ -134,14 +148,11 @@ class SyncService implements SyncEndpoints
         $run = function () use ($apply, &$result): void {
             $result = $apply();
         };
-        try {
-            if ($type instanceof PersistsRecords && $this->store instanceof IlluminateStore) {
-                $this->store->databaseConnection()->transaction($run);
-            } else {
-                $run();
-            }
-        } catch (\PDOException $failure) {
-            throw self::unstorable($failure) ?? $failure;
+        if ($type instanceof PersistsRecords && $this->store instanceof IlluminateStore) {
+            $this->store->readCommitted();
+            $this->store->databaseConnection()->transaction($run);
+        } else {
+            $run();
         }
         if ($result === null) {
             throw new \LogicException('The sync transaction completed without a result.');
@@ -235,26 +246,6 @@ class SyncService implements SyncEndpoints
      * How the writer wants a conflict handled. Absent means the server's
      * resolver decides, which is what every client before this field did.
      */
-    /**
-     * A value the application's table refuses - too long, out of range, NULL
-     * in a NOT NULL column, a broken foreign key. The whole write was rolled
-     * back, and sending it again changes nothing, so the device is told it is
-     * final instead of retrying a 500 forever. What the database said stays in
-     * the server's log: it names tables and columns the caller need not know.
-     */
-    private static function unstorable(\PDOException $failure): ?SyncRequestRejected
-    {
-        $sqlState = $failure->errorInfo[0] ?? null;
-        $state = is_string($sqlState) ? $sqlState : (string) $failure->getCode();
-        $driverCode = $failure->errorInfo[1] ?? null;
-        if (! str_starts_with($state, '22') && ! str_starts_with($state, '23') && $driverCode !== 1364) {
-            return null;
-        }
-        report($failure);
-
-        return new SyncRequestRejected('The application could not store a value in this write', 'invalid_field_value');
-    }
-
     private static function onConflict(\stdClass $body): OnConflict
     {
         $value = Payload::optionalString($body, 'on_conflict');

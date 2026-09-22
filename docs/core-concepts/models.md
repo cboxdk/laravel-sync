@@ -58,7 +58,9 @@ cannot hold, an unknown enum case say, is refused with `invalid_field_value`
 before anything is stored. What the application's own observers make of a write
 reaches the devices too: after the row is written it is read back, and any
 difference in any synced field - including a column the database defaulted on a
-device's create - is recorded as the server's own write, one version later. A
+device's create - is recorded as the server's own write, one version later, and
+counted as part of the device's write: its answer carries that version, so the
+device's next edit does not conflict with it. A
 value only the table refuses (NULL in a NOT NULL column, a string too long, a
 broken foreign key) rolls the whole write back and is answered 422
 `invalid_field_value`; the database's own message goes to your log, not to the
@@ -97,7 +99,13 @@ every change a delta carries - a row that becomes hidden is removed from the
 device - and to what a conflict answer may disclose. The rule is asked about your
 real row, with sync's values over it, so a rule that reads a column devices never
 see still hides what it hides on REST. That is one indexed read per row it
-judges. A rule that throws hides the row rather than failing the page. A change to the rule itself - a user losing access to a
+judges. A rule that throws hides the row rather than failing the page.
+
+The rule can only judge a row as it is now, so a change to a row it does not show
+now reaches a device as a removal of the id and nothing else - including a row
+deleted since the device last synced, and a row that moved to another owner. A
+device may be told an id it never had has left; it is never sent the content of
+a row it may not see. A change to the rule itself - a user losing access to a
 project - is not a change to any row: bump the principal's `binding` and devices
 rebuild their window under the new rule.
 
