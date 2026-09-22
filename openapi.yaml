@@ -302,7 +302,9 @@ components:
             `applied` / `partial` / `noop` — it landed.
             `conflict` — competing values were preserved; see `conflict_groups`.
             `rejected` / `validation_failed` / `precondition_failed` — it did not land, and the user has to be told.
-            `mutation_gap` — the server has not seen everything before this; resume from `acknowledged_sequence` + 1.
+            `mutation_gap` — this stream's numbering is out of step with the server's; set your counter to
+            exactly `acknowledged_sequence` (lower or higher) and resend. `reason` is `sequence_behind` when the
+            device is the one that is behind, after restoring an older backup.
             `pull_required` — only with `on_conflict: pull`. Nothing was stored. `conflicts` names the
             fields someone else changed; pull, rethink, and resend the same mutation based on `record_version`.
         record_version: { type: integer }
