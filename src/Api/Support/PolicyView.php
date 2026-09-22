@@ -16,9 +16,11 @@ use Cbox\Sync\Views\QueryableView;
  * and to what a push may disclose about a conflict, so a row the policy hides
  * reaches the device by no path.
  *
- * The rule is asked about a model built from what sync holds for the row -
- * its key, its tenant and its synced fields - not from the table: asking the
- * database once per row would make a bootstrap page cost a query per record.
+ * The rule is asked about the real row, with sync's values over it, so a rule
+ * reading a column devices never see still hides what it hides on REST. That
+ * costs a read per row judged - remembered for the life of the view, so a row
+ * judged before and after a change in one delta is read once. A row that no
+ * longer exists is visible: its delete is all there is left to send.
  *
  * The rule's answer is folded into membership when a row changes. A change to
  * the rule itself - a user losing access to a project - is not a change to any
@@ -54,8 +56,16 @@ class PolicyView implements QueryableView
         return $this->view->criteria();
     }
 
+    /** @var array<string, bool> the rule's answer per record version */
+    private array $answers = [];
+
     public function includes(EntityRecord $record): bool
     {
-        return $this->view->includes($record) && ($this->allows)($record);
+        if (! $this->view->includes($record)) {
+            return false;
+        }
+        $key = $record->entity->key()."\0".$record->version->value;
+
+        return $this->answers[$key] ??= ($this->allows)($record);
     }
 }

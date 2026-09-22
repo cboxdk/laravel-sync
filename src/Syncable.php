@@ -75,6 +75,42 @@ trait Syncable
         return self::$syncSuspended;
     }
 
+    /** @var array<string, int> keys whose writes are sync's own right now, with a nesting count */
+    private static array $syncSuspendedKeys = [];
+
+    /**
+     * Run something whose writes to THIS record are sync's own.
+     *
+     * Only this key. Suspending the whole class hid every other row of it the
+     * application touched along the way - an observer updating a summary row
+     * of the same model - and those writes never reached a device.
+     *
+     * @template TReturn
+     *
+     * @param  \Closure(): TReturn  $callback
+     * @return TReturn
+     */
+    public static function withoutSyncingKey(string $key, \Closure $callback): mixed
+    {
+        self::$syncSuspendedKeys[$key] = (self::$syncSuspendedKeys[$key] ?? 0) + 1;
+
+        try {
+            return $callback();
+        } finally {
+            if (--self::$syncSuspendedKeys[$key] === 0) {
+                unset(self::$syncSuspendedKeys[$key]);
+            }
+        }
+    }
+
+    /** Whether a write to this model right now is sync's own. */
+    private function syncIsOwnWrite(): bool
+    {
+        $key = $this->getKey();
+
+        return self::$syncSuspended || ((is_string($key) || is_int($key)) && isset(self::$syncSuspendedKeys[(string) $key]));
+    }
+
     /**
      * Class casts whose stored form is JSON text. Their value travels as the
      * JSON it holds, like the array and json casts.
@@ -102,7 +138,7 @@ trait Syncable
      */
     public function save(array $options = []): bool
     {
-        if (self::$syncSuspended) {
+        if ($this->syncIsOwnWrite()) {
             return parent::save($options);
         }
 
@@ -125,7 +161,7 @@ trait Syncable
      */
     public function delete(): ?bool
     {
-        if (self::$syncSuspended) {
+        if ($this->syncIsOwnWrite()) {
             return parent::delete();
         }
 
@@ -143,7 +179,7 @@ trait Syncable
      */
     protected function incrementOrDecrement($column, $amount, $extra, $method): mixed
     {
-        if (self::$syncSuspended) {
+        if ($this->syncIsOwnWrite()) {
             return parent::incrementOrDecrement($column, $amount, $extra, $method);
         }
 
@@ -170,7 +206,7 @@ trait Syncable
     public static function bootSyncable(): void
     {
         static::created(static function (self $model): void {
-            if (self::$syncSuspended) {
+            if ($model->syncIsOwnWrite()) {
                 return;
             }
             // Read back, so a column the database defaulted is in the log as
@@ -180,7 +216,7 @@ trait Syncable
         });
 
         static::updating(static function (self $model): void {
-            if (self::$syncSuspended) {
+            if ($model->syncIsOwnWrite()) {
                 return;
             }
             $column = $model->syncScopeColumn();
@@ -197,7 +233,7 @@ trait Syncable
         });
 
         static::updated(static function (self $model): void {
-            if (self::$syncSuspended) {
+            if ($model->syncIsOwnWrite()) {
                 return;
             }
             // Read back, like a create: an increment racing another sets this
@@ -208,7 +244,7 @@ trait Syncable
         });
 
         static::deleted(static function (self $model): void {
-            if (self::$syncSuspended) {
+            if ($model->syncIsOwnWrite()) {
                 return;
             }
             app(SyncRecorder::class)->record($model, deleting: true);
@@ -216,7 +252,7 @@ trait Syncable
 
         if (method_exists(static::class, 'restoring')) {
             static::restoring(static function (self $model): void {
-                if (self::$syncSuspended) {
+                if ($model->syncIsOwnWrite()) {
                     return;
                 }
                 // A delete is permanent in the log - devices have already
@@ -307,6 +343,13 @@ trait Syncable
         $probe = $this->newInstance();
         foreach ($values as $field => $value) {
             try {
+                // A number that is not one, or that no column can hold, is
+                // refused here - past this point a cast turned "abc" into 0 on
+                // one driver and a server error on another.
+                if ($value !== null && in_array($this->syncCastType($field), ['int', 'integer', 'real', 'float', 'double', 'decimal'], true)
+                    && (! is_numeric($value) || ! is_finite((float) $value))) {
+                    throw new \InvalidArgumentException('not a number');
+                }
                 if ($value !== null && $this->isDateCastable($field) && (is_string($value) || is_int($value))) {
                     // An offset the device sent is honoured, then expressed in
                     // the app's timezone - dropping it moved 10:00+02:00 to 10:00.

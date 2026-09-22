@@ -54,4 +54,12 @@ interface SyncableModel
     public static function withoutSyncing(\Closure $callback): mixed;
 
     public static function syncSuspended(): bool;
+
+    /**
+     * @template TReturn
+     *
+     * @param  \Closure(): TReturn  $callback
+     * @return TReturn
+     */
+    public static function withoutSyncingKey(string $key, \Closure $callback): mixed;
 }

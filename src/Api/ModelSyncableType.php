@@ -121,6 +121,12 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
             // One that cannot even evaluate hides the row rather than failing
             // the whole page for everyone in the tenant.
             function (EntityRecord $record) use ($gate): bool {
+                // A row that is gone has nothing left to hide but its id - and
+                // judging it as a model of nulls hid the delete itself, so the
+                // owner's other devices kept a row that no longer exists.
+                if (! $this->rowExists($record)) {
+                    return true;
+                }
                 try {
                     return $gate->allows('view', $this->hydrate($record));
                 } catch (\Throwable) {
@@ -196,7 +202,7 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
 
         /** @var class-string<Model&SyncableModel> $model */
         $model = $this->model;
-        $model::withoutSyncing(function () use ($model, $record, $attributes, $column, $tenant): void {
+        $model::withoutSyncingKey($record->entity->id, function () use ($model, $record, $attributes, $column, $tenant): void {
             // Without global scopes: a row the application's scope hides is
             // still the row, and missing it here inserted a duplicate key.
             $row = $model::query()->withoutGlobalScopes()->whereKey($record->entity->id)->first() ?? new $model;
@@ -292,7 +298,7 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
         /** @var class-string<Model&SyncableModel> $model */
         $model = $this->model;
         $column = $this->prototype->syncScopeColumn();
-        $model::withoutSyncing(function () use ($model, $record, $column): void {
+        $model::withoutSyncingKey($record->entity->id, function () use ($model, $record, $column): void {
             $query = $model::query()->withoutGlobalScopes()->whereKey($record->entity->id);
             if ($column !== null) {
                 $query->where($column, $this->scopeOf($record->entity->space));
@@ -305,6 +311,18 @@ class ModelSyncableType implements NormalizesValues, PersistsRecords, SyncableTy
     public function connectionName(): ?string
     {
         return $this->prototype->getConnectionName();
+    }
+
+    private function rowExists(EntityRecord $record): bool
+    {
+        $query = ($this->model)::query()->withoutGlobalScopes()->whereKey($record->entity->id);
+        $deletedAt = method_exists($this->prototype, 'getDeletedAtColumn') ? $this->prototype->getDeletedAtColumn() : null;
+        if (is_string($deletedAt)) {
+            // A soft-deleted row is gone too, as far as a device is concerned.
+            $query->whereNull($deletedAt);
+        }
+
+        return $query->exists();
     }
 
     /**

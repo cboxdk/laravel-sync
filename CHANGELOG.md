@@ -17,7 +17,9 @@ Requires `cboxdk/sync` 0.9.
 - A server write that loses a race no longer leaves a conflict group behind.
 - **Policies see the real row**, with the synced values laid over it, instead of a model with every non-synced attribute null.
 - **A device's values are put through the model before they are logged**, so the log holds what a save on the server would: typed, through mutators, dates with their offset honoured. A value the model cannot hold is refused with `invalid_field_value`; one bad enum used to be stored and then break every bootstrap in the tenant. What the application's own observers make of a write, and what a racing increment leaves in the column, reach the devices too.
-- Sync's own reads and writes of the table ignore global scopes.
+- Sync's own reads and writes of the table ignore global scopes, and suspend recording only for the row being written - an observer writing another row of the same model during a sync write is recorded.
+- A delete reaches devices even when the `view` rule reads a column devices never see.
+- A number that is not one - `"abc"`, `1e400` - is refused with `invalid_field_value` instead of a server error the device retried for ever.
 - **The policy's `view` rule decides which rows a device gets**, judged on the real row. It used to be `viewAny` only, so every row in a tenant was synced to everyone who could read the type. A row that becomes hidden is removed from the device.
 - **Refused by name rather than half-done:** moving a record between tenants, restoring a soft-deleted record, a model on a different connection from the sync store, a model that declares nothing to sync. Hidden fields and the tenant column are never synced.
 - **`If-Match` is a whole-record precondition (412)**, as HTTP defines it, accepting a list or `*` and failing when it cannot be read; `base_version` keeps field-level merging. Both apply only to the model the route bound, not to everything saved during the request.

@@ -90,6 +90,7 @@ beforeEach(function () {
         $table->json('opts')->nullable();
         $table->text('secret')->nullable();
         $table->string('kind')->nullable();
+        $table->string('owner_id')->nullable();
         $table->timestamps();
     });
 });
@@ -353,7 +354,9 @@ class AllowCards
 
     public function view(Member $user, Card $card): bool
     {
-        return $card->getAttribute('title') !== 'hidden';
+        // owner_id is not synced: the rule reads the real row.
+        return $card->getAttribute('title') !== 'hidden'
+            && in_array($card->getAttribute('owner_id'), [null, $user->getAuthIdentifier()], true);
     }
 
     public function create(): bool
@@ -466,3 +469,49 @@ it('checks If-Match once per request, not on every save of the record', function
 
     expect(Card::find('t2')?->status)->toBe('done');
 });
+
+/**
+ * The row is gone by the time the delta judges it, so a rule reading a column
+ * devices never see met a model of nulls and hid the delete itself - the
+ * owner's other devices kept the row for ever.
+ */
+it('sends a delete even when the view rule reads a column devices never see', function () {
+    cardsOverApi($this);
+    $id = pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'mine']])->assertOk()->json('id');
+    Card::withoutSyncing(fn () => Card::query()->whereKey($id)->update(['owner_id' => 'alice']));
+    $cursor = $this->postJson('/sync/bootstrap', ['type' => 'cards', 'scope' => 'owners', 'page_size' => 10])->assertOk()->json('cursor');
+
+    Card::find($id)?->delete();
+
+    $kinds = [];
+    foreach ($this->postJson('/sync/delta', ['type' => 'cards', 'scope' => 'owners', 'cursor' => $cursor])->assertOk()->json('commits') as $commit) {
+        foreach ($commit['changes'] as $change) {
+            $kinds[] = $change['kind'];
+        }
+    }
+    expect($kinds)->toContain('deleted');
+});
+
+/** Suspending the whole class during a sync write hid an observer's write to another row of it. */
+it('logs what an observer writes to another row of the same model during a sync write', function () {
+    cardsOverApi($this);
+    card('summary', ['title' => 'none yet']);
+    Card::saved(function (Card $card): void {
+        if ($card->getKey() !== 'summary') {
+            Card::find('summary')?->update(['title' => 'last: '.$card->getAttribute('title')]);
+        }
+    });
+
+    pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => 'title', 'op' => 'set', 'value' => 'news']])->assertOk();
+
+    expect(Card::find('summary')?->title)->toBe('last: news')
+        ->and(logged('summary')?->value('title')->value())->toBe('last: news');
+});
+
+/** "abc" became 0 on one driver and a server error on another; a server error made the device retry for ever. */
+it('refuses a number that is not one', function (string $field, mixed $value) {
+    cardsOverApi($this);
+
+    pushCard($this, 'm1', 1, 'create', 'h', 0, [['field' => $field, 'op' => 'set', 'value' => $value]])
+        ->assertStatus(422)->assertJsonPath('error', 'invalid_field_value');
+})->with([['priority', 'abc'], ['amount', '1e400'], ['amount', 'twelve']]);
