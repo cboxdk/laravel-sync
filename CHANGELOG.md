@@ -17,6 +17,7 @@ Requires `cboxdk/sync` 0.9.
 - A server write that loses a race no longer leaves a conflict group behind.
 - **Policies see the real row**, with the synced values laid over it, instead of a model with every non-synced attribute null.
 - **A device's values are put through the model before they are logged**, so the log holds what a save on the server would: typed, through mutators, dates with their offset honoured. A value the model cannot hold is refused with `invalid_field_value`; one bad enum used to be stored and then break every bootstrap in the tenant. What the application's own observers make of a write, and what a racing increment leaves in the column, reach the devices too.
+- On MySQL the package's own transactions run at READ COMMITTED, so writers in different tenants no longer deadlock on the log's indexes; the docs recommend the same `isolation_level` for the connection, since model saves run in the application's transaction.
 - Sync's own reads and writes of the table ignore global scopes, and suspend recording only for the row being written - an observer writing another row of the same model during a sync write is recorded.
 - A delete reaches devices even when the `view` rule reads a column devices never see.
 - A number that is not one - `"abc"`, `1e400` - is refused with `invalid_field_value` instead of a server error the device retried for ever.

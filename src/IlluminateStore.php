@@ -44,14 +44,28 @@ class IlluminateStore extends PdoStore
         return $this->db;
     }
 
+    /** Inside the host's own transaction the isolation is the host's; see PdoLedger. */
+    private bool $nested = false;
+
     protected function begin(): void
     {
+        $this->nested = $this->db->transactionLevel() > 0;
+        if (! $this->nested && $this->schema->driver === PdoSchema::MYSQL) {
+            // Read committed, as PdoStore does for its own transactions: no
+            // stale snapshot, no gap locks across spaces.
+            $this->connection()->exec('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        }
         $this->db->beginTransaction();
         if ($this->schema->driver === PdoSchema::SQLITE) {
             // Laravel opens SQLite transactions deferred, which would let two
             // readers race to the same commit sequence. Take the write lock now.
             $this->connection()->exec('UPDATE sync_spaces SET commit_sequence = commit_sequence WHERE 1 = 0');
         }
+    }
+
+    protected function needsLockingReads(): bool
+    {
+        return $this->nested;
     }
 
     protected function commit(): void

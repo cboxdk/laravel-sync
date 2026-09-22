@@ -18,6 +18,26 @@ Publish with `php artisan vendor:publish --tag=sync-config`.
 | `bootstrap.secret` | `SYNC_BOOTSTRAP_SECRET` | application key | Signs stateless tokens |
 | `retention.keep_commits` | `SYNC_KEEP_COMMITS` | `10000` | How much history to keep when you prune |
 
+## MySQL: run the connection at READ COMMITTED
+
+The package opens its own transactions at READ COMMITTED on MySQL. A model save,
+and a sync write whose model and log share a transaction, run inside a
+transaction your application began - at your connection's isolation. At MySQL's
+default, REPEATABLE READ, writers in different tenants can deadlock on the log's
+shared indexes; each deadlock is answered 503 and retried, but it costs latency.
+Set it on the connection that holds the sync tables:
+
+```php
+// config/database.php - the mysql connection, next to its other keys
+return [
+    'connections' => [
+        'mysql' => [
+            'isolation_level' => 'READ COMMITTED',
+        ],
+    ],
+];
+```
+
 ## Changing schema_version or epoch
 
 Both are bound into every client cursor. Changing either tells clients their
