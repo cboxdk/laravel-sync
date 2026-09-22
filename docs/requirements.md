@@ -10,10 +10,13 @@ These are the runtime requirements enforced by `composer.json`.
 
 | Requirement | Version |
 | --- | --- |
-| `cboxdk/sync` | `^0.4` |
+| `cboxdk/sync` | `^0.9` |
 | PHP extension `pdo` | `*` |
 | `illuminate/config` | `^12.0 \|\| ^13.0` |
 | `illuminate/contracts` | `^12.0 \|\| ^13.0` |
 | `illuminate/database` | `^12.0 \|\| ^13.0` |
+| `illuminate/http` | `^12.0 \|\| ^13.0` |
+| `illuminate/routing` | `^12.0 \|\| ^13.0` |
 | `illuminate/support` | `^12.0 \|\| ^13.0` |
 | PHP | `^8.4` |
+| `symfony/http-foundation` | `^7.0 \|\| ^8.0` |

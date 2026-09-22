@@ -6,7 +6,7 @@
     "require": {
         "php": "^8.4",
         "ext-pdo": "*",
-        "cboxdk/sync": "^0.8",
+        "cboxdk/sync": "^0.9",
         "illuminate/config": "^12.0 || ^13.0",
         "illuminate/contracts": "^12.0 || ^13.0",
         "illuminate/database": "^12.0 || ^13.0",

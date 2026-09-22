@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Laravel\Api\ApiServiceProvider;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Contracts\SyncPrincipals;
@@ -14,6 +15,7 @@ use Cbox\Sync\Laravel\Tests\Fixtures\Member;
 use Cbox\Sync\Laravel\Tests\Fixtures\Note;
 use Cbox\Sync\Laravel\Tests\Fixtures\NotePolicy;
 use Cbox\Sync\Laravel\Tests\Fixtures\SecondNote;
+use Cbox\Sync\ValueObjects\EntityKey;
 use Illuminate\Contracts\Auth\Factory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
@@ -22,12 +24,17 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\TestResponse;
 
 beforeEach(function () {
+    // A shared database outlives the test: without this the second test to
+    // run on MySQL or PostgreSQL finds the first one's table.
+    Schema::dropIfExists('notes');
+    Schema::dropIfExists('members');
     Schema::create('notes', function (Blueprint $table) {
         $table->string('id')->primary();
         $table->string('team_id');
         $table->string('title')->nullable();
         $table->string('body')->nullable();
         $table->string('status')->nullable();
+        $table->string('locked_by')->nullable();
         $table->timestamps();
     });
     Schema::create('members', function (Blueprint $table) {
@@ -44,6 +51,11 @@ beforeEach(function () {
     );
     Gate::policy(Note::class, NotePolicy::class);
     app()->forgetInstance(SyncableTypes::class);
+});
+
+afterEach(function () {
+    Schema::dropIfExists('notes');
+    Schema::dropIfExists('members');
 });
 
 function member(string $id, string $team): Member
@@ -187,4 +199,173 @@ it('refuses two syncable types claiming the same entity type', function () {
     // silently serving one of the two and never the other is what it did before.
     expect(fn () => app(SyncableTypes::class)->registered())
         ->toThrow(RuntimeException::class, 'unreachable');
+});
+
+/**
+ * A policy reads more than the synced fields. Built from synced fields alone,
+ * the model had locked_by as null, and the policy let through an edit the real
+ * row forbids.
+ */
+it('asks the policy about the real row, not only what sync can see', function () {
+    $this->actingAs(member('alice', 'owners'));
+    pushNote()->assertOk();
+    Note::withoutSyncing(fn () => Note::query()->whereKey(noteId('alice'))->update(['locked_by' => 'bob']));
+
+    pushNote([
+        'mutation_id' => 'm2', 'id' => noteId('alice'), 'sequence' => 2, 'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'sneaky']],
+    ])->assertForbidden();
+
+    expect(Note::find(noteId('alice'))->title)->toBe('First note');
+});
+
+/**
+ * A lost response, then the field stops being writable. The retry used to be
+ * refused, the device could not advance, and every later write was rejected
+ * for reusing a sequence.
+ */
+it('answers a replay from its receipt even after the caller lost permission to make it again', function () {
+    $this->actingAs(member('alice', 'owners'));
+    $first = pushNote()->assertOk()->json();
+
+    Gate::policy(Note::class, get_class(new class
+    {
+        public function viewAny(): bool
+        {
+            return true;
+        }
+
+        public function create(): bool
+        {
+            return false;
+        }
+    }));
+
+    expect(pushNote()->assertOk()->json())->toBe($first);
+});
+
+it('refuses a replayed id carrying a different position in the stream', function () {
+    $this->actingAs(member('alice', 'owners'));
+    pushNote()->assertOk();
+
+    pushNote(['sequence' => 7])->assertStatus(409)->assertJsonPath('error', 'protocol_violation');
+});
+
+/** A receipt replay used to write the row again, firing the application's saved observers twice. */
+it('writes the table once per change, not once per request', function () {
+    $this->actingAs(member('alice', 'owners'));
+    $saves = 0;
+    Note::saved(function () use (&$saves): void {
+        $saves++;
+    });
+
+    pushNote()->assertOk();
+    pushNote()->assertOk();
+
+    expect($saves)->toBe(1);
+});
+
+/** A column has no "absent". Skipping an unset left the old value in the table while the log said none. */
+it('writes NULL for a field the device unset', function () {
+    $this->actingAs(member('alice', 'owners'));
+    pushNote()->assertOk();
+
+    pushNote([
+        'mutation_id' => 'm2', 'id' => noteId('alice'), 'sequence' => 2, 'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'status', 'op' => 'unset']],
+    ])->assertOk()->assertJsonPath('status', 'applied');
+
+    expect(Note::find(noteId('alice'))->status)->toBeNull();
+});
+
+/** An observer that cancels the save used to leave the log saying "applied". */
+it('rolls the write back when the application cancels saving the row', function () {
+    $this->actingAs(member('alice', 'owners'));
+    Note::saving(fn (): bool => false);
+
+    $this->withoutExceptionHandling();
+    expect(fn () => pushNote())->toThrow(RuntimeException::class, 'cancelled by the application');
+
+    expect(app(Store::class)->receipt(IdentityBinding::mutationId(new SyncPrincipal('alice', 'alice'), 'm1')))->toBeNull();
+});
+
+/** Hidden is the host saying a response must never show a column; syncing it would put it on every device. */
+it('never syncs a field the model hides', function () {
+    $model = new class extends Note
+    {
+        protected $hidden = ['body'];
+    };
+
+    expect($model->syncFields())->toBe(['title', 'status']);
+});
+
+it('refuses to guess the fields of a model that declares none', function () {
+    $model = new class extends Note
+    {
+        protected $fillable = [];
+    };
+
+    expect(fn () => $model->syncFields())->toThrow(LogicException::class, 'declares nothing to sync');
+});
+
+/** A row on another connection keeps its write when the log rolls back. */
+it('refuses a model on a different connection from the sync store', function () {
+    $this->actingAs(member('alice', 'owners'));
+    config()->set('database.connections.elsewhere', config('database.connections.sync-testing'));
+    config()->set('sync.api.types', [ElsewhereNote::class]);
+    app()->forgetInstance(SyncableTypes::class);
+    Gate::policy(ElsewhereNote::class, NotePolicy::class);
+
+    $this->withoutExceptionHandling();
+    expect(fn () => pushNote())->toThrow(LogicException::class, 'must share one');
+});
+
+class ElsewhereNote extends Note
+{
+    protected $connection = 'elsewhere';
+}
+
+class CastNote extends Note
+{
+    protected $casts = ['body' => 'array'];
+}
+
+/**
+ * The log used to take the raw column - JSON text - and writing it back
+ * through the cast encoded it again. One unrelated edit turned a document
+ * into a string.
+ */
+it('round-trips a cast field through the log without re-encoding it', function () {
+    $this->actingAs(member('alice', 'owners'));
+    config()->set('sync.api.types', [CastNote::class]);
+    app()->forgetInstance(SyncableTypes::class);
+    Gate::policy(CastNote::class, NotePolicy::class);
+    $note = new CastNote;
+    $note->forceFill(['id' => 'c1', 'team_id' => 'owners', 'title' => 't', 'body' => ['a' => 1]])->save();
+
+    $stored = app(Store::class)->record(new EntityKey('notes:owners', 'notes', 'c1'));
+    // A JSON object, not the text of one.
+    expect($stored?->value('body')->value())->toEqual((object) ['a' => 1]);
+
+    pushNote([
+        'mutation_id' => 'm2', 'id' => 'c1', 'sequence' => 1, 'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'edited']],
+    ])->assertOk()->assertJsonPath('status', 'applied');
+
+    expect(CastNote::find('c1')->body)->toBe(['a' => 1]);
+});
+
+/** A row this key names in another tenant is never handed to this one. */
+it('refuses to write a row that belongs to another tenant', function () {
+    $this->actingAs(member('alice', 'owners'));
+    pushNote()->assertOk();
+    Note::withoutSyncing(fn () => Note::query()->whereKey(noteId('alice'))->update(['team_id' => 'others']));
+
+    $this->withoutExceptionHandling();
+    expect(fn () => pushNote([
+        'mutation_id' => 'm2', 'id' => noteId('alice'), 'sequence' => 2, 'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'mine now']],
+    ]))->toThrow(LogicException::class);
+
+    expect(Note::find(noteId('alice'))->team_id)->toBe('others');
 });

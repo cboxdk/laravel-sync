@@ -8,11 +8,14 @@ use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\AdapterContext;
 use Cbox\Sync\Data\FieldOperation;
 use Cbox\Sync\Data\Mutation;
+use Cbox\Sync\Data\MutationResult;
 use Cbox\Sync\Engine;
 use Cbox\Sync\Enums\MutationKind;
 use Cbox\Sync\Enums\MutationStatus;
+use Cbox\Sync\Exceptions\ProtocolException;
 use Cbox\Sync\Laravel\Contracts\SyncableModel;
 use Cbox\Sync\Laravel\Exceptions\SyncConflict;
+use Cbox\Sync\Laravel\Exceptions\SyncRejected;
 use Cbox\Sync\ValueObjects\EntityKey;
 use Cbox\Sync\ValueObjects\MutationSequence;
 use Cbox\Sync\ValueObjects\RecordVersion;
@@ -44,7 +47,18 @@ class SyncRecorder
     ) {}
 
     /**
-     * @param  array<string, mixed>  $changed  Field name => the value now stored
+     * How many times a write that lost a race for the server's sequence is
+     * tried again. Every trusted write shares one replica stream, and the
+     * number is read before the engine takes the space lock, so two writers can
+     * pick the same one; the loser stored nothing and simply goes again.
+     */
+    private const ATTEMPTS = 3;
+
+    /**
+     * @param  list<string>  $changed  the fields this write set
+     *
+     * @throws SyncConflict when the caller named a version that has moved
+     * @throws SyncRejected when the engine refused the write outright
      */
     public function record(Model $model, bool $deleting = false, array $changed = []): void
     {
@@ -58,29 +72,66 @@ class SyncRecorder
             return;
         }
 
-        $operations = [];
-        $synced = array_flip($model->syncFields());
-        foreach ($changed as $field => $value) {
-            if (isset($synced[$field])) {
-                $operations[] = FieldOperation::set((string) $field, $value);
-            }
-        }
-        if ($operations === [] && ! $deleting) {
+        $fields = array_values(array_intersect($changed, $model->syncFields()));
+        if ($fields === [] && ! $deleting) {
             return;
+        }
+        $operations = [];
+        foreach ($model->syncValues($fields) as $field => $value) {
+            $operations[] = FieldOperation::set($field, $value);
         }
 
-        // The log decides whether this is a create, not the model. A model
-        // instance reports wasRecentlyCreated for its whole life, and a row that
-        // predates sync - or was written around it - has no record at all yet.
-        $current = $this->store->record($entity);
-        $kind = match (true) {
-            $deleting => MutationKind::Delete,
-            $current === null || $current->deleted => MutationKind::Create,
-            default => MutationKind::Update,
-        };
-        if ($deleting && ($current === null || $current->deleted)) {
+        $claimed = $this->claimedBase();
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                $result = $this->attempt($entity, $deleting, $operations, $claimed);
+            } catch (ProtocolException $collided) {
+                // Another trusted write took this sequence number between the
+                // read and the lock. Nothing was stored for this one.
+                if ($attempt >= self::ATTEMPTS) {
+                    throw $collided;
+                }
+
+                continue;
+            }
+            if ($result === null) {
+                return;
+            }
+
+            $status = $result->status;
+            $raced = $status === MutationStatus::MutationGap
+                // A write with no claimed version means "I know the current
+                // state"; if it conflicts anyway, the state moved between the
+                // read and the lock, and a fresh read settles it.
+                || ($claimed === null && $status === MutationStatus::Conflict);
+            if ($raced && $attempt < self::ATTEMPTS) {
+                continue;
+            }
+
+            match ($status) {
+                MutationStatus::Conflict, MutationStatus::PreconditionFailed => throw SyncConflict::from($result),
+                MutationStatus::Rejected, MutationStatus::ValidationFailed, MutationStatus::MutationGap => throw SyncRejected::from($result),
+                default => null,
+            };
+
             return;
         }
+    }
+
+    /** @param list<FieldOperation> $operations */
+    private function attempt(EntityKey $entity, bool $deleting, array $operations, ?int $claimed): ?MutationResult
+    {
+        // The log decides whether this is a create, not the model: a row that
+        // predates sync - or was written around it - has no record yet.
+        $current = $this->store->record($entity);
+        if ($deleting && ($current === null || $current->deleted)) {
+            return null;
+        }
+        $kind = match (true) {
+            $deleting => MutationKind::Delete,
+            $current === null => MutationKind::Create,
+            default => MutationKind::Update,
+        };
 
         $replica = new Replica('server');
 
@@ -89,9 +140,9 @@ class SyncRecorder
         // which is the truthful statement that this write knows the current
         // state - and a write that knows the current state cannot conflict.
         $stored = $current?->version->value ?? 0;
-        $base = $kind === MutationKind::Create ? 0 : ($this->claimedBase() ?? $stored);
+        $base = $kind === MutationKind::Create ? 0 : ($claimed ?? $stored);
 
-        $result = $this->engine->process(
+        return $this->engine->process(
             new Mutation(
                 'server-'.bin2hex(random_bytes(16)),
                 $entity,
@@ -99,14 +150,10 @@ class SyncRecorder
                 new MutationSequence($this->store->acknowledged($entity->space, $replica) + 1),
                 $kind,
                 new RecordVersion($base),
-                $operations,
+                $kind === MutationKind::Delete ? [] : $operations,
             ),
             new AdapterContext($this->actor()),
         );
-
-        if ($result->status === MutationStatus::Conflict || $result->status === MutationStatus::PreconditionFailed) {
-            throw SyncConflict::from($result);
-        }
     }
 
     /** @param Model&SyncableModel $model */

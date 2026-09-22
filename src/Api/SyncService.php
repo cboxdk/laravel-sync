@@ -11,14 +11,20 @@ use Cbox\Sync\Contracts\IdGenerator;
 use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\AdapterContext;
 use Cbox\Sync\Data\MutationResult;
+use Cbox\Sync\Data\Receipt;
 use Cbox\Sync\Engine;
+use Cbox\Sync\Enums\MutationStatus;
+use Cbox\Sync\Enums\OnConflict;
+use Cbox\Sync\Exceptions\ProtocolException;
 use Cbox\Sync\Laravel\Api\Contracts\PersistsRecords;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableType;
 use Cbox\Sync\Laravel\Api\Contracts\SyncableTypes;
 use Cbox\Sync\Laravel\Api\Contracts\SyncEndpoints;
 use Cbox\Sync\Laravel\Api\Exceptions\SyncRequestRejected;
 use Cbox\Sync\Laravel\Api\Exceptions\UnknownSyncableType;
+use Cbox\Sync\Laravel\Api\Support\BoundView;
 use Cbox\Sync\Laravel\Api\Support\FieldValueCodec;
+use Cbox\Sync\Laravel\Api\Support\IdentityBinding;
 use Cbox\Sync\Laravel\Api\Support\MutationMapper;
 use Cbox\Sync\Laravel\Api\Support\Payload;
 use Cbox\Sync\Laravel\Api\Support\ResultMapper;
@@ -26,9 +32,12 @@ use Cbox\Sync\Laravel\Api\Support\ViewMapper;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\Laravel\IlluminateStore;
 use Cbox\Sync\Observers\NullCommitObserver;
+use Cbox\Sync\ValueObjects\EntityKey;
+use Cbox\Sync\ValueObjects\Identifier;
 use Cbox\Sync\Views\BootstrapToken;
 use Cbox\Sync\Views\ViewSyncService;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Database\Connection;
 use Illuminate\Http\Request;
 
 class SyncService implements SyncEndpoints
@@ -48,32 +57,40 @@ class SyncService implements SyncEndpoints
     {
         $body = FieldValueCodec::decodeBody($request->getContent());
         $type = $this->type($body);
-        $space = $type->space($principal, Payload::optionalString($body, 'scope'));
 
+        // A mutation this server has already processed is answered from its
+        // receipt, before anything about the caller's CURRENT permissions is
+        // consulted - the scope, the writable fields, the policy.
+        //
+        // Otherwise a retry after a lost response can be refused by a rule that
+        // changed in between: a field no longer writable, a policy that reads
+        // the record and denies because the row is now deleted. The write
+        // already happened; denying the ANSWER does not undo it, it only
+        // strands the client, which cannot advance its acknowledgement and has
+        // every later write refused for reusing a sequence. One lost response
+        // would wedge the device for good. The id is bound to the principal, so
+        // only the caller that made the write can reach its receipt.
+        $clientMutationId = Payload::string($body, 'mutation_id');
+        Identifier::check($clientMutationId, 'mutation_id');
+        $receipt = $this->store->receipt(IdentityBinding::mutationId($principal, $clientMutationId));
+        if ($receipt !== null) {
+            return $this->fromReceipt($receipt, $body, $principal, $type);
+        }
+
+        $space = $type->space($principal, Payload::optionalString($body, 'scope'));
         $mutation = MutationMapper::fromWire(
             $body, $principal, $type->entityType(), $space,
             $type->writableFields($principal),
             $this->setting('api.max_operations', 64),
         );
 
-        // A mutation this server has already processed is answered from its
-        // receipt, whatever authorization says now.
-        //
-        // Otherwise a retry after a lost response can be refused by a policy
-        // that reads the record - deleting a row and then being denied because
-        // the row is deleted. The write already happened; denying the ANSWER
-        // does not undo it, it only strands the client, which abandons the
-        // mutation without advancing its acknowledgement and then has every
-        // later write rejected for reusing a sequence. One lost response would
-        // wedge the device permanently.
-        $alreadyProcessed = $this->store->receipt($mutation->id) !== null;
-
         // Before the engine, always. A mutation id that reaches it is
         // acknowledged forever, so a refusal afterwards would leave the client
         // unable to retry that id ever again.
-        if (! $alreadyProcessed && ! $type->mayWrite($principal, $this->store->record($mutation->entity), $mutation->kind)) {
+        if (! $type->mayWrite($principal, $this->store->record($mutation->entity), $mutation->kind)) {
             throw SyncRequestRejected::forbidden();
         }
+        $this->assertOneConnection($type);
 
         // The engine is built per request so its validator can re-check this
         // caller's authorization inside the transaction, against the same
@@ -90,9 +107,13 @@ class SyncService implements SyncEndpoints
         // this one, so a failure writing the row takes the mutation back with
         // it - the alternative is a table that disagrees with the log, which is
         // worse than either being wrong alone.
-        $apply = function () use ($engine, $mutation, $principal, $type): MutationResult {
-            $result = $engine->process($mutation, new AdapterContext($principal->id, $principal->integrationId));
-            if ($type instanceof PersistsRecords) {
+        $onConflict = self::onConflict($body);
+        $apply = function () use ($engine, $mutation, $principal, $type, $onConflict): MutationResult {
+            $result = $engine->process($mutation, new AdapterContext($principal->id, $principal->integrationId), $onConflict);
+            // Only a write that changed the record reaches the table. A noop, a
+            // conflict or a refusal left it as it was, and writing it again
+            // anyway fired the application's saved observers for nothing.
+            if ($type instanceof PersistsRecords && in_array($result->status, [MutationStatus::Applied, MutationStatus::Partial], true)) {
                 $settled = $this->store->record($mutation->entity);
                 if ($settled !== null) {
                     $settled->deleted ? $type->forget($settled) : $type->persist($settled);
@@ -102,18 +123,58 @@ class SyncService implements SyncEndpoints
             return $result;
         };
 
-        $result = $type instanceof PersistsRecords && $this->store instanceof IlluminateStore
-            ? $this->store->databaseConnection()->transaction($apply)
-            : $apply();
+        // Captured by reference rather than returned through transaction(),
+        // whose return type is mixed on Laravel 12 and generic on 13.
+        $result = null;
+        $run = function () use ($apply, &$result): void {
+            $result = $apply();
+        };
+        if ($type instanceof PersistsRecords && $this->store instanceof IlluminateStore) {
+            $this->store->databaseConnection()->transaction($run);
+        } else {
+            $run();
+        }
+        if ($result === null) {
+            throw new \LogicException('The sync transaction completed without a result.');
+        }
 
+        return $this->answer($result, $mutation->entity, Payload::string($body, 'id'), $body, $principal, $type);
+    }
+
+    /**
+     * A replay: the stored answer, told to the caller under TODAY's disclosure
+     * rules.
+     *
+     * The receipt is only honoured for the same stream and position it was
+     * made at. Anything else reusing the id is a client bug the engine would
+     * refuse as a protocol violation, and so does this.
+     *
+     * @return array<string, mixed>
+     */
+    private function fromReceipt(Receipt $receipt, \stdClass $body, SyncPrincipal $principal, SyncableType $type): array
+    {
+        $stored = $receipt->mutation;
+        if ($stored->entity->type !== $type->entityType()
+            || $stored->replica->id !== IdentityBinding::replica($principal, Payload::string($body, 'replica'))->id
+            || $stored->sequence->value !== Payload::int($body, 'sequence')) {
+            throw new ProtocolException('Mutation identity reused with different content');
+        }
+
+        return $this->answer($receipt->result, $stored->entity, Payload::string($body, 'id'), $body, $principal, $type);
+    }
+
+    /** @return array<string, mixed> */
+    private function answer(MutationResult $result, EntityKey $entity, string $handle, \stdClass $body, SyncPrincipal $principal, SyncableType $type): array
+    {
         // Whether the caller may see this row at all, judged on the canonical
         // record after the write. A field whitelist bounds columns; only the
         // view bounds rows.
-        $canonical = $this->store->record($mutation->entity);
+        $scope = Payload::optionalString($body, 'scope');
+        $canonical = $this->store->record($entity);
         $rowIsReadable = $canonical !== null
             && ! $canonical->deleted
-            && $type->mayRead($principal, Payload::optionalString($body, 'scope'))
-            && $type->view($principal, Payload::optionalString($body, 'scope'))->includes($canonical);
+            && $type->mayRead($principal, $scope)
+            && $type->view($principal, $scope)->includes($canonical);
 
         $groups = [];
         foreach ($result->conflictGroupIds as $id) {
@@ -126,13 +187,54 @@ class SyncService implements SyncEndpoints
         // The device sent a handle it made up; this is the name the record
         // has. Echoing the handle back is what lets the device find the row it
         // created and rewrite anything still queued against it.
-        $identity = ['id' => $mutation->entity->id];
-        $handle = Payload::string($body, 'id');
-        if ($handle !== $mutation->entity->id) {
+        $identity = ['id' => $entity->id];
+        if ($handle !== $entity->id) {
             $identity['temp_id'] = $handle;
         }
 
         return $identity + ResultMapper::toWire($result, $type->readableFields($principal), $groups, $rowIsReadable);
+    }
+
+    /**
+     * The row and the log have to commit together, and a transaction spans one
+     * connection. A model on a different connection from the sync store would
+     * keep its row when the log rolled back, or the other way round - so that
+     * configuration is refused rather than quietly made non-atomic.
+     */
+    private function assertOneConnection(SyncableType $type): void
+    {
+        if (! $type instanceof ModelSyncableType || ! $this->store instanceof IlluminateStore) {
+            return;
+        }
+        $connection = $this->store->databaseConnection();
+        if (! $connection instanceof Connection) {
+            return;
+        }
+        $model = $type->connectionName();
+        $default = $this->config->get('database.default');
+        $model ??= is_string($default) ? $default : null;
+        $store = $connection->getName();
+        if ($model !== null && $store !== null && $model !== $store) {
+            throw new \LogicException(sprintf(
+                'The %s model is on connection "%s" but the sync store is on "%s". They must share one, or a write can land in one and not the other. Set sync.connection to "%s".',
+                $type->entityType(), $model, $store, $model,
+            ));
+        }
+    }
+
+    /**
+     * How the writer wants a conflict handled. Absent means the server's
+     * resolver decides, which is what every client before this field did.
+     */
+    private static function onConflict(\stdClass $body): OnConflict
+    {
+        $value = Payload::optionalString($body, 'on_conflict');
+        if ($value === null) {
+            return OnConflict::Resolve;
+        }
+
+        return OnConflict::tryFrom($value)
+            ?? throw new SyncRequestRejected('on_conflict must be "resolve" or "pull"', 'invalid_request');
     }
 
     public function bootstrap(Request $request, SyncPrincipal $principal): array
@@ -141,7 +243,7 @@ class SyncService implements SyncEndpoints
         $scope = Payload::optionalString($body, 'scope');
         $type = $this->readableType($body, $principal, $scope);
 
-        $view = $type->view($principal, $scope);
+        $view = BoundView::to($type->view($principal, $scope), $principal);
         $context = $this->views->context($type->space($principal, $scope), $view);
 
         $token = Payload::optionalString($body, 'token');
@@ -158,7 +260,7 @@ class SyncService implements SyncEndpoints
         $scope = Payload::optionalString($body, 'scope');
         $type = $this->readableType($body, $principal, $scope);
 
-        $view = $type->view($principal, $scope);
+        $view = BoundView::to($type->view($principal, $scope), $principal);
         $context = $this->views->context($type->space($principal, $scope), $view);
         $cursor = ViewMapper::cursorFromWire($body, $context);
 

@@ -13,7 +13,7 @@ use Cbox\Sync\Laravel\Api\Exceptions\SyncRequestRejected;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\Views\ResetRequired;
 use Illuminate\Database\DetectsConcurrencyErrors;
-use Illuminate\Database\QueryException;
+use Illuminate\Database\DetectsLostConnections;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -25,6 +25,7 @@ use Illuminate\Http\Request;
 trait HandlesSyncRequests
 {
     use DetectsConcurrencyErrors;
+    use DetectsLostConnections;
 
     /** Supplied by the host from its own promoted constructor property. */
     abstract protected function syncEndpoints(): SyncEndpoints;
@@ -70,17 +71,23 @@ trait HandlesSyncRequests
             return $this->syncError(422, 'invalid_request', $invalid->getMessage());
         } catch (TransientFailure $transient) {
             return $this->syncRetriable($transient->getMessage());
-        } catch (QueryException $query) {
+        } catch (\PDOException $query) {
             // A space lock that timed out or deadlocked is contention, not a
             // bug, and it is the most common production failure here. Without
             // this it surfaces as a 500 and looks permanent to the client.
+            //
+            // PDOException, not only Laravel's QueryException: the sync store
+            // runs on the raw PDO handle, so a lock wait on the space row
+            // arrives as a bare PDOException and used to skip this entirely.
+            // A dropped connection is the same kind of answer - nothing was
+            // committed, and the same mutation may be sent again.
             //
             // Laravel's own detector rather than a SQLSTATE list: a lock wait
             // timeout is HY000 on MySQL, and so is a missing column default and
             // a missing table. Treating that code as contention told the client
             // to retry a schema mistake for ever, against production, with
             // nothing surfacing anywhere.
-            if (! $this->causedByConcurrencyError($query)) {
+            if (! $this->causedByConcurrencyError($query) && ! $this->causedByLostConnection($query)) {
                 throw $query;
             }
 

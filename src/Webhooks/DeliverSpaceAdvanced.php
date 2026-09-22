@@ -67,6 +67,12 @@ class DeliverSpaceAdvanced implements ShouldQueue
             // should not.
             $this->guard->assertSafe($url, ['https'], allowCredentials: false);
             $pinned = $this->guard->pinnedOptions($url, ['https'], allowCredentials: false);
+            // A pin that is not there is a check that happened before a second
+            // DNS lookup. Refused rather than sent unpinned.
+            $curl = $pinned['curl'] ?? null;
+            if (! is_array($curl) || ! isset($curl[CURLOPT_RESOLVE])) {
+                throw BlockedUrl::make('the connection could not be pinned to the validated address');
+            }
         } catch (BlockedUrl $blocked) {
             // Refusing loudly rather than trying anyway. A blocked target is a
             // misconfiguration or an attempt, and neither should be retried by

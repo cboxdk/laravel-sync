@@ -8,6 +8,8 @@ use Cbox\Sync\Contracts\CommitObserver;
 use Cbox\Sync\Laravel\Events\SpaceAdvanced;
 use Cbox\Sync\ValueObjects\CommitSequence;
 use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Database\Connection;
+use Illuminate\Database\ConnectionInterface;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -23,9 +25,38 @@ class DispatchesSpaceAdvanced implements CommitObserver
     public function __construct(
         private readonly Dispatcher $events,
         private readonly LoggerInterface $log,
+        private readonly ?ConnectionInterface $connection = null,
     ) {}
 
+    /**
+     * Announced once the OUTERMOST transaction on the sync connection commits.
+     *
+     * The engine's own transaction is only a savepoint when the host has one
+     * open, and finishing it commits nothing. Announcing then told devices
+     * about writes the host went on to roll back - and a device that pulled at
+     * once found nothing and was never told again. Deferred here rather than
+     * by marking the event, so a listener that throws is still caught below
+     * instead of escaping from the host's own DB::transaction() after it has
+     * already committed.
+     */
     public function committed(string $space, CommitSequence $watermark): void
+    {
+        $announce = fn () => $this->announce($space, $watermark);
+        if ($this->connection instanceof Connection) {
+            try {
+                // Runs at once when no transaction is open.
+                $this->connection->afterCommit($announce);
+
+                return;
+            } catch (\RuntimeException) {
+                // A connection built outside an application has no
+                // transaction manager; there is nothing to wait for.
+            }
+        }
+        $announce();
+    }
+
+    private function announce(string $space, CommitSequence $watermark): void
     {
         try {
             $this->events->dispatch(new SpaceAdvanced($space, $watermark->value));

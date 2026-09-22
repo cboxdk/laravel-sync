@@ -79,25 +79,51 @@ trait Syncable
      * client for ever, because they are following a sequence it never appeared
      * in.
      *
+     * An update is recorded BEFORE the row is written, on `updating`. That is
+     * what makes a conflict a clean 409: the log refuses, the exception stops
+     * Eloquent, and the table never holds the value that lost. Recording after
+     * the write left the rejected value in the table and the old one in the
+     * log. It also carries exactly this write's changes - the dirty attributes
+     * - where the previous save's leftovers used to ride along.
+     *
+     * A create is recorded on `created`, after the insert, because a key the
+     * model generates itself (HasUuids and friends) is only there by then. A
+     * create cannot conflict, so nothing is lost by waiting.
+     *
      * These are events rather than overrides of save() and delete() on purpose:
      * overriding delete() would collide with SoftDeletes, which a host is very
      * likely to be using already.
      *
-     * ATOMICITY: the event fires inside Model::save(), which Laravel does not
-     * wrap in a transaction. Wrap your own write in DB::transaction() if the
-     * row and the log must move together. The API path does this for you - a
-     * client's write and its record commit or roll back as one.
+     * ATOMICITY: Laravel does not wrap save() in a transaction. Wrap your own
+     * write in DB::transaction() if the row and the log must move together
+     * even when the database itself fails part-way. The API path does this for
+     * you - a client's write and its record commit or roll back as one.
      */
     public static function bootSyncable(): void
     {
-        static::saved(static function (self $model): void {
+        static::created(static function (self $model): void {
             if (self::$syncSuspended) {
                 return;
             }
-            app(SyncRecorder::class)->record(
-                $model,
-                changed: $model->wasRecentlyCreated ? $model->getAttributes() : $model->getChanges(),
-            );
+            app(SyncRecorder::class)->record($model, changed: $model->syncFields());
+        });
+
+        static::updating(static function (self $model): void {
+            if (self::$syncSuspended) {
+                return;
+            }
+            $column = $model->syncScopeColumn();
+            if ($column !== null && $model->isDirty($column)) {
+                // The tenant is part of the record's key in the log. Moving it
+                // would leave the old tenant holding a live copy with authority
+                // over a row that is no longer theirs.
+                throw new \LogicException(sprintf(
+                    'A synced %s cannot move between tenants by changing "%s". Delete it and create it in the new tenant.',
+                    static::class,
+                    $column,
+                ));
+            }
+            app(SyncRecorder::class)->record($model, changed: array_keys($model->getDirty()));
         });
 
         static::deleted(static function (self $model): void {
@@ -106,6 +132,46 @@ trait Syncable
             }
             app(SyncRecorder::class)->record($model, deleting: true);
         });
+
+        if (method_exists(static::class, 'restoring')) {
+            static::restoring(static function (self $model): void {
+                if (self::$syncSuspended) {
+                    return;
+                }
+                // A delete is permanent in the log - devices have already
+                // dropped the record and been told its id is spent. Restoring
+                // the row here would bring it back for this server and nobody
+                // else, silently.
+                throw new \LogicException(sprintf(
+                    'A synced %s cannot be restored once deleted: the delete has already reached every device. Create a new record instead.',
+                    static::class,
+                ));
+            });
+        }
+    }
+
+    /**
+     * The value a synced field carries on the wire: the model's own serialized
+     * form, as an API resource would show it.
+     *
+     * Not the raw attribute. For a field cast to array the raw attribute is the
+     * JSON text in the column, and writing that back through the cast encoded
+     * it a second time - a document became a string. The serialized form is
+     * what fill() takes back, so the round trip is exact for casts, dates,
+     * enums and encrypted columns alike.
+     *
+     * @param  list<string>  $fields
+     * @return array<string, mixed>
+     */
+    public function syncValues(array $fields): array
+    {
+        $serialized = $this->attributesToArray();
+        $values = [];
+        foreach ($fields as $field) {
+            $values[$field] = array_key_exists($field, $serialized) ? $serialized[$field] : $this->getAttribute($field);
+        }
+
+        return $values;
     }
 
     /** The entity type written into every synced key. Never change it once rows exist. */
@@ -129,13 +195,21 @@ trait Syncable
         }
 
         // Fillable is the host's own statement of what a request may set, which
-        // is the same question this is asking.
-        $fillable = $this->getFillable();
+        // is the same question this is asking. Hidden is its statement of what
+        // a response must never show, so a hidden fillable field is not synced:
+        // syncing it would put it in every device's database.
+        $fillable = array_values(array_diff($this->getFillable(), $this->getHidden()));
         if ($fillable !== []) {
-            return array_values($fillable);
+            return $fillable;
         }
 
-        return array_values(array_diff($this->syncColumns(), $this->syncNeverWritable()));
+        // Nothing said. Every column would include whatever the table holds -
+        // tokens, internal notes, columns added next year - so refuse rather
+        // than guess.
+        throw new \LogicException(sprintf(
+            '%s declares nothing to sync. Set $fillable, or $syncFields to the fields devices may see and change.',
+            static::class,
+        ));
     }
 
     /**

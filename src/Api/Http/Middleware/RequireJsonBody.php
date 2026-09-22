@@ -24,7 +24,7 @@ class RequireJsonBody
     /** @param \Closure(Request): Response $next */
     public function handle(Request $request, \Closure $next): Response
     {
-        if (! $request->isJson()) {
+        if (! self::isJsonMediaType($request->headers->get('Content-Type'))) {
             return $this->refuse(415, 'unsupported_media_type', 'Content-Type must be application/json');
         }
         $length = $request->headers->get('Content-Length');
@@ -33,6 +33,25 @@ class RequireJsonBody
         }
 
         return $next($request);
+    }
+
+    /**
+     * The media type itself, exactly - not Request::isJson().
+     *
+     * isJson() looks for "/json" or "+json" ANYWHERE in the header, so
+     * `text/plain; charset=+json` passed. Its media type is still text/plain,
+     * which a browser sends cross-origin without a preflight - the one thing
+     * this check exists to stop.
+     */
+    private static function isJsonMediaType(?string $header): bool
+    {
+        if ($header === null) {
+            return false;
+        }
+        $type = strtolower(trim(explode(';', $header, 2)[0]));
+
+        return $type === 'application/json'
+            || (str_starts_with($type, 'application/') && str_ends_with($type, '+json'));
     }
 
     private function refuse(int $status, string $code, string $message): JsonResponse

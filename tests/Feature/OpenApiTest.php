@@ -238,6 +238,36 @@ it('describes a mutation gap exactly as it answers one', function () {
     expect($body['acknowledged_sequence'])->toBeInt();
 });
 
+/**
+ * The answer a device gets when it asked to decide conflicts itself. It is
+ * the one that tells it which fields to rethink and what to base the retry on,
+ * so both have to be where the description says.
+ */
+it('describes a pull_required exactly as it answers one', function () {
+    $id = seedTaskFor($this);
+
+    pushAs($this, 'alice', [
+        'mutation_id' => 'a2', 'id' => $id, 'replica' => 'device-1', 'sequence' => 2,
+        'kind' => 'update', 'base_version' => 1,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'from alice']],
+    ])->assertOk();
+
+    $body = pushAs($this, 'bob', [
+        'mutation_id' => 'b1', 'id' => $id, 'replica' => 'device-2', 'sequence' => 1,
+        'kind' => 'update', 'base_version' => 1, 'on_conflict' => 'pull',
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'from bob']],
+    ])->assertOk()->json();
+
+    expect($body['status'])->toBe('pull_required');
+    expect(spec()['components']['schemas']['PushResponse']['properties']['status']['enum'])->toContain('pull_required');
+    expect(spec()['components']['schemas']['PushRequest']['properties']['on_conflict']['enum'])->toBe(['resolve', 'pull']);
+    expect(array_diff(array_keys($body), declaredOf('PushResponse')))->toBe([]);
+    expect($body['record_version'])->toBe(2);
+    expect(array_column($body['conflicts'], 'field'))->toBe(['title']);
+    expect($body['conflicts'][0]['current']['value'] ?? null)->toBe('from alice');
+    expect($body['conflict_groups'])->toBe([]);
+});
+
 it('describes a precondition failure exactly as it answers one', function () {
     $id = seedTaskFor($this);
 

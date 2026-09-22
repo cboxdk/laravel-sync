@@ -19,7 +19,9 @@ class NotePolicy
 
     public function update(Member $user, Note $note): bool
     {
-        return $user->team_id !== 'readers' && $note->status !== 'locked';
+        // locked_by is not synced: the policy reads the real row, not only
+        // what devices can see.
+        return $user->team_id !== 'readers' && $note->status !== 'locked' && $note->getAttribute('locked_by') === null;
     }
 
     public function delete(Member $user, Note $note): bool

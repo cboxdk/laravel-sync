@@ -137,3 +137,20 @@ it('reports a rotated epoch as a reset the client can act on', function () {
         ->assertJsonPath('error', 'reset_required')
         ->assertJsonPath('reason', 'context_changed');
 });
+
+/**
+ * SyncPrincipal::$binding promised that a permission change invalidates open
+ * bootstraps and cursors. It was read nowhere, so a device carried on with a
+ * window cut under the old rules.
+ */
+it('makes a device rebuild when its principal\'s authorization changes', function () {
+    $this->postJson('/sync/push', ['type' => 'tasks', 'scope' => 'team-1', 'mutation_id' => 'm1', 'id' => 'h', 'replica' => 'd', 'sequence' => 1, 'kind' => 'create', 'base_version' => 0,
+        'operations' => [['field' => 'title', 'op' => 'set', 'value' => 'x'], ['field' => 'status', 'op' => 'set', 'value' => 'open']]], ['X-Test-Principal' => 'alice'])->assertOk();
+
+    $page = $this->postJson('/sync/bootstrap', ['type' => 'tasks', 'scope' => 'team-1', 'page_size' => 10], ['X-Test-Principal' => 'alice', 'X-Test-Binding' => 'v1'])->assertOk();
+    $cursor = $page->json('cursor');
+
+    $this->postJson('/sync/delta', ['type' => 'tasks', 'scope' => 'team-1', 'cursor' => $cursor], ['X-Test-Principal' => 'alice', 'X-Test-Binding' => 'v1'])->assertOk();
+    $this->postJson('/sync/delta', ['type' => 'tasks', 'scope' => 'team-1', 'cursor' => $cursor], ['X-Test-Principal' => 'alice', 'X-Test-Binding' => 'v2'])
+        ->assertStatus(409)->assertJsonPath('error', 'reset_required');
+});

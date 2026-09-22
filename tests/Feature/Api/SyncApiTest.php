@@ -3,8 +3,11 @@
 declare(strict_types=1);
 
 use Cbox\Sync\Contracts\Store;
+use Cbox\Sync\Laravel\Api\Contracts\SyncEndpoints;
 use Cbox\Sync\Laravel\Api\Support\IdentityBinding;
+use Cbox\Sync\Laravel\Api\SyncService;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
+use Cbox\Sync\Persistence\InMemoryStore;
 use Illuminate\Testing\TestResponse;
 
 /** Real HTTP through the router, the way a device would call it. */
@@ -156,7 +159,117 @@ it('refuses unauthenticated, unknown and unreadable requests', function () {
         ->assertStatus(403)->assertJsonPath('error', 'forbidden');
 });
 
-it('refuses a request that is not json', function () {
-    $this->call('POST', '/sync/push', [], [], [], ['HTTP_X-Test-Principal' => 'alice', 'CONTENT_TYPE' => 'text/plain'], 'type=tasks')
+it('refuses a request that is not json', function (string $contentType) {
+    $this->call('POST', '/sync/push', [], [], [], ['HTTP_X-Test-Principal' => 'alice', 'CONTENT_TYPE' => $contentType], '{"type":"tasks"}')
         ->assertStatus(415)->assertJsonPath('error', 'unsupported_media_type');
+})->with([
+    'plain text' => 'text/plain',
+    // Request::isJson() accepts these: "+json" anywhere in the header. Each is
+    // a type a browser sends cross-origin without asking first.
+    'json smuggled into a parameter' => 'text/plain; charset=+json',
+    'json smuggled into a form' => 'application/x-www-form-urlencoded; x=/json',
+    'multipart' => 'multipart/form-data; boundary=+json',
+]);
+
+it('accepts json and structured json types', function (string $contentType) {
+    $this->call('POST', '/sync/push', [], [], [], ['HTTP_X-Test-Principal' => 'alice', 'CONTENT_TYPE' => $contentType], '{"type":"ghosts"}')
+        ->assertStatus(404);
+})->with(['application/json', 'application/json; charset=utf-8', 'Application/JSON', 'application/vnd.api+json']);
+
+/**
+ * A device that asked to decide conflicts itself: refused, caught up, sent
+ * again under the same identity, landed - and no conflict group anywhere.
+ */
+it('refuses a stale write, then accepts it rebased on what the refusal reported', function () {
+    push($this, 'alice', mutation('m1', 'task-1', 1, 'create', 0, [setOp('title', 'draft'), setOp('status', 'open')]))->assertOk();
+    push($this, 'alice', mutation('m2', 'task-1', 2, 'update', 1, [setOp('title', 'from alice')]))->assertOk();
+
+    $stale = mutation('b1', 'task-1', 1, 'update', 1, [setOp('title', 'from bob'), setOp('meta', 'noted')], 'device-2', 'bob') + ['on_conflict' => 'pull'];
+    $refused = push($this, 'bob', $stale)->assertOk()->assertJsonPath('status', 'pull_required');
+
+    $store = app(Store::class);
+    // Nothing was stored for it, not even the fresh field.
+    expect($store->receipt(IdentityBinding::mutationId(new SyncPrincipal('bob', 'bob'), 'b1')))->toBeNull()
+        ->and($refused->json('commit_sequence'))->toBeNull()
+        ->and($refused->json('acknowledged_sequence'))->toBe(0);
+    $this->postJson('/sync/bootstrap', ['type' => 'tasks', 'scope' => 'team-1', 'page_size' => 10], ['X-Test-Principal' => 'bob'])
+        ->assertJsonPath('records.0.fields.meta.present', false);
+
+    // Same mutation id and sequence, based on the version the refusal named.
+    $rebased = array_merge($stale, ['base_version' => $refused->json('record_version')]);
+    push($this, 'bob', $rebased)->assertOk()
+        ->assertJsonPath('status', 'applied')
+        ->assertJsonPath('conflict_groups', [])
+        ->assertJsonPath('acknowledged_sequence', 1);
+
+    $this->postJson('/sync/bootstrap', ['type' => 'tasks', 'scope' => 'team-1', 'page_size' => 10], ['X-Test-Principal' => 'bob'])
+        ->assertJsonPath('records.0.fields.title.value', 'from bob')
+        ->assertJsonPath('records.0.fields.meta.value', 'noted');
+});
+
+it('refuses an on_conflict it does not know', function () {
+    push($this, 'alice', mutation('m1', 'task-1', 1, 'create', 0, [setOp('title', 'draft')]) + ['on_conflict' => 'overwrite'])
+        ->assertStatus(422)->assertJsonPath('error', 'invalid_request');
+});
+
+/** A store whose space lock fails the way a database does. */
+function storeFailingWith(string $message): void
+{
+    $failing = new class($message) extends InMemoryStore
+    {
+        public function __construct(private string $failure)
+        {
+            parent::__construct();
+        }
+
+        public function transaction(string $space, Closure $callback): mixed
+        {
+            throw new PDOException($this->failure);
+        }
+    };
+    app()->instance(Store::class, $failing);
+    foreach ([SyncEndpoints::class, SyncService::class] as $abstract) {
+        app()->forgetInstance($abstract);
+    }
+}
+
+/**
+ * The sync store runs on the raw PDO handle, so a lock wait on the space row
+ * is a bare PDOException - which skipped the contention check and answered 500.
+ * Two devices writing to one busy space on MySQL got an error that looked
+ * permanent.
+ */
+it('answers a lock wait on the space as busy, so the client retries the same write', function () {
+    storeFailingWith('SQLSTATE[HY000]: General error: 1205 Lock wait timeout exceeded; try restarting transaction');
+
+    push($this, 'alice', mutation('m1', 'task-1', 1, 'create', 0, [setOp('title', 'x')]))
+        ->assertStatus(503)
+        ->assertJsonPath('error', 'retry')
+        ->assertJsonPath('retriable', true);
+});
+
+it('does not dress a schema mistake up as contention', function () {
+    storeFailingWith("SQLSTATE[HY000]: General error: 1364 Field 'payload' doesn't have a default value");
+
+    $this->withoutExceptionHandling();
+    expect(fn () => push($this, 'alice', mutation('m1', 'task-1', 1, 'create', 0, [setOp('title', 'x')])))
+        ->toThrow(PDOException::class, 'default value');
+});
+
+/**
+ * One 200,000-character id used to produce a continuation token too large to
+ * post back, and every device bootstrapping the view was stuck for good.
+ */
+it('refuses an oversized identifier before it reaches anything', function (string $field) {
+    $body = mutation('m1', 'task-1', 1, 'create', 0, [setOp('title', 'x')]);
+    $body[$field] = str_repeat('x', 151);
+
+    push($this, 'alice', $body)->assertStatus(422)->assertJsonPath('error', 'invalid_request');
+})->with(['id', 'mutation_id', 'replica']);
+
+it('refuses an oversized id on an update too', function () {
+    $body = mutation('m2', 'task-1', 1, 'update', 1, [setOp('title', 'x')]);
+    $body['id'] = str_repeat('y', 200000);
+
+    push($this, 'alice', $body)->assertStatus(422)->assertJsonPath('error', 'invalid_request');
 });

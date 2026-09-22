@@ -20,6 +20,9 @@ use Illuminate\Foundation\Events\Dispatchable;
  * channel is the usual answer for a web client, a queued job for a webhook, and
  * nothing at all is fine too - a device that only polls is still correct, just
  * less prompt.
+ *
+ * Dispatched after the OUTERMOST transaction commits, not when the engine's
+ * own savepoint finishes - see DispatchesSpaceAdvanced.
  */
 class SpaceAdvanced
 {

@@ -12,6 +12,7 @@ use Cbox\Sync\Exceptions\InvalidRequest;
 use Cbox\Sync\Laravel\Api\Exceptions\SyncRequestRejected;
 use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
 use Cbox\Sync\ValueObjects\EntityKey;
+use Cbox\Sync\ValueObjects\Identifier;
 use Cbox\Sync\ValueObjects\MutationSequence;
 use Cbox\Sync\ValueObjects\RecordVersion;
 
@@ -45,6 +46,13 @@ class MutationMapper
         }
 
         try {
+            // The handle a create carries is never stored as a key, but it is
+            // echoed back and it is client input: held to the same bound as
+            // every identifier, so nothing oversized comes back out either.
+            Identifier::check(Payload::string($body, 'id'), 'id');
+            Identifier::check(Payload::string($body, 'mutation_id'), 'mutation_id');
+            Identifier::check(Payload::string($body, 'replica'), 'replica');
+
             return new Mutation(
                 IdentityBinding::mutationId($principal, Payload::string($body, 'mutation_id')),
                 // A create is named by the server; the id in the body is only

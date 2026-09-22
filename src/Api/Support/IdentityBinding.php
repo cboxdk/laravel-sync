@@ -54,10 +54,20 @@ class IdentityBinding
      * The principal is inside the hash, so no caller can produce a name another
      * caller would produce, and reaching an existing record's name would mean
      * finding a sha256 preimage.
+     *
+     * Shaped as a UUID (version 8, the RFC 9562 form for custom derivations) so
+     * it fits the uuid or char(36) key column a model already has. 122 bits of
+     * the hash survive the version and variant bits - far past any collision
+     * that matters, and still no preimage to find.
      */
     public static function entityId(SyncPrincipal $principal, string $clientMutationId): string
     {
-        return self::hash('entity', $principal->id, $clientMutationId);
+        $bytes = substr(hash('sha256', serialize(['entity', $principal->id, $clientMutationId]), true), 0, 16);
+        $bytes[6] = chr((ord($bytes[6]) & 0x0F) | 0x80);
+        $bytes[8] = chr((ord($bytes[8]) & 0x3F) | 0x80);
+        $hex = bin2hex($bytes);
+
+        return sprintf('%s-%s-%s-%s-%s', substr($hex, 0, 8), substr($hex, 8, 4), substr($hex, 12, 4), substr($hex, 16, 4), substr($hex, 20, 12));
     }
 
     private static function hash(string $domain, string $principalId, string $value): string

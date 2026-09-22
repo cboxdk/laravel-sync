@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+use Cbox\Sync\Laravel\Api\Support\IdentityBinding;
+use Cbox\Sync\Laravel\Api\ValueObjects\SyncPrincipal;
+
 /**
  * An id a client chooses is attacker-controlled input in a key position: it can
  * squat an identifier another tenant is about to use, and the engine's own
@@ -63,4 +66,13 @@ it('takes the real name on an update', function () {
     expect($bootstrap->json('records'))->toHaveCount(1);
     expect($bootstrap->json('records.0.id'))->toBe($created->json('id'));
     expect($bootstrap->json('records.0.fields.title.value'))->toBe('after');
+});
+
+/** The name has to fit the uuid key column a model already has. */
+it('names a record with a UUID', function () {
+    $id = IdentityBinding::entityId(new SyncPrincipal('alice', 'alice'), 'm1');
+
+    expect($id)->toMatch('/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/')
+        ->and(IdentityBinding::entityId(new SyncPrincipal('alice', 'alice'), 'm1'))->toBe($id)
+        ->and(IdentityBinding::entityId(new SyncPrincipal('bob', 'bob'), 'm1'))->not->toBe($id);
 });

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Laravel\Events\SpaceAdvanced;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 
@@ -94,4 +95,47 @@ it('keeps the write when a listener fails', function () {
     pushOne($this, 't1', 1);
 
     expect(app(Store::class)->watermark('team-1')->value)->toBe(1);
+});
+
+/**
+ * The engine's own transaction is a savepoint when the host has one open.
+ * Announcing at the end of the savepoint told devices about writes the host
+ * then rolled back, and a device that pulled at once found nothing and was
+ * never told again.
+ */
+it('waits for the outermost transaction to commit, and says nothing if it rolls back', function () {
+    $heard = 0;
+    Event::listen(SpaceAdvanced::class, function () use (&$heard): void {
+        $heard++;
+    });
+
+    try {
+        DB::transaction(function () use (&$heard): void {
+            pushOne($this, 't1', 1);
+            expect($heard)->toBe(0);
+
+            throw new RuntimeException('the host changes its mind');
+        });
+    } catch (RuntimeException) {
+    }
+    expect($heard)->toBe(0);
+
+    DB::transaction(function () use (&$heard): void {
+        pushOne($this, 't2', 1);
+        expect($heard)->toBe(0);
+    });
+    expect($heard)->toBe(1);
+});
+
+/** Deferred to the commit, a throwing listener must still not escape into the host's code. */
+it('keeps a failing listener out of the host transaction that committed the write', function () {
+    Event::listen(SpaceAdvanced::class, function (): void {
+        throw new RuntimeException('listener broke');
+    });
+    Log::spy();
+
+    DB::transaction(fn () => pushOne($this, 't1', 1));
+
+    expect(app(Store::class)->watermark('team-1')->value)->toBe(1);
+    Log::shouldHaveReceived('error')->once();
 });

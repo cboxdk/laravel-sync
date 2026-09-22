@@ -31,8 +31,16 @@ WRITING
   globally unique. Re-sending the same id is SAFE and returns the same answer.
   That is how you recover from a lost response: retry the identical request.
   Never reuse an id with different content - that is a permanent error.
-- `replica` identifies this device. `sequence` is your own counter for that
-  replica: gapless, ascending, starting at 1.
+- `replica` identifies a stream of writes. `sequence` is your own counter for
+  that replica: gapless, ascending, starting at 1.
+- Use ONE replica value per device PER type AND scope you write to (for example
+  `device-7/tasks/team-1`), each with its own counter. The server numbers per
+  replica per space, and several scopes can map to one space; sharing a counter
+  across them makes writes collide.
+- If you get `mutation_gap` with an `acknowledged_sequence` LOWER than you
+  expected, the server is behind you (restored from a backup). Set your counter
+  to exactly that value and continue; nothing you still hold is lost.
+- 401 means the session expired. Keep the queue; sign in again and resend.
 - Assign `sequence` when you SEND, not when you queue. A mutation that never
   reaches the server must not consume a number, or the server waits for it
   forever and every later write comes back as a gap.
@@ -48,17 +56,35 @@ CREATING A RECORD
   carrying its parent's id - is yours to fix; the server cannot know which of
   your fields are references.
 
-THE FOUR ANSWERS TO A PUSH (read `status`, and the HTTP code)
-1. 200 with status applied | partial | noop -> it landed. Move on.
+THE ANSWERS TO A PUSH (read `status`, and the HTTP code)
+1. 200 with status applied | partial | noop -> it landed. Move on. EXCEPT: if
+   `decisions` names a field as `server_wins`, the server kept its own value
+   for that field. Tell the user that edit did not stick.
 2. 200 with status conflict | rejected | validation_failed | precondition_failed
    -> it was processed but did NOT land as you asked. SURFACE THIS TO THE USER.
    "Sent" is not "saved". Nothing else in the system will mention it.
 3. 200 with status mutation_gap -> the server has not seen everything before
    this. Renumber from `acknowledged_sequence` + 1 and resend. If you get the
    same answer twice in a row, stop and back off; do not loop.
-4. 503, or `retriable: true` -> resend the IDENTICAL request, same mutation_id,
+4. 200 with status pull_required -> only if you sent `on_conflict: "pull"`.
+   Nothing was stored. See DECIDING CONFLICTS ON THE DEVICE.
+5. 503, or `retriable: true` -> resend the IDENTICAL request, same mutation_id,
    after a delay. Do not renumber, do not drop it.
    Any other non-2xx -> do not resend as-is; fix the request or surface it.
+
+DECIDING CONFLICTS ON THE DEVICE (optional)
+- By default a conflicting edit is kept next to the other one in a conflict
+  group, for a person to choose. That needs a resolve UI.
+- Send `"on_conflict": "pull"` instead and the server refuses a stale edit with
+  status `pull_required`, storing nothing. `conflicts` lists each field someone
+  else changed, with their value in `current`, and `record_version` is what
+  they changed it to.
+- Decide per field: keep yours, take theirs, or merge. Then resend THE SAME
+  `mutation_id` and THE SAME `sequence` with the decided operations and
+  `base_version` = the refusal's `record_version`. Not the version from a newer
+  pull: that could overwrite fields nobody looked at.
+- Give up after about three refusals in a row and resend without `on_conflict`;
+  the server then keeps both values, which loses nothing.
 
 READING
 - First time: POST /bootstrap with no `token`. Repeat with the `next_token` you

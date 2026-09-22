@@ -134,29 +134,38 @@ class ModelSyncableType implements PersistsRecords, SyncableType
      * the application - a computed column, a relation's foreign key, a counter
      * - and overwriting it with nothing is how a sync layer eats data it was
      * never given.
+     *
+     * A field with no value becomes NULL: a column has no "absent", and
+     * skipping it left the old value in the table while the log said there was
+     * none.
      */
     public function persist(EntityRecord $record): void
     {
         $attributes = [];
         foreach ($this->prototype->syncFields() as $field) {
             $value = $record->value($field);
-            if ($value->exists) {
-                $attributes[$field] = $value->value();
-            }
+            $attributes[$field] = $value->exists ? $value->value() : null;
         }
 
         // The tenant is not a synced field - a client must never be able to set
         // it - but a new row cannot exist without it, and it is already encoded
         // in the space the engine wrote under.
         $column = $this->prototype->syncScopeColumn();
+        $tenant = $column === null ? null : $this->scopeOf($record->entity->space);
         if ($column !== null) {
-            $attributes[$column] = $this->scopeOf($record->entity->space);
+            $attributes[$column] = $tenant;
         }
 
         /** @var class-string<Model&SyncableModel> $model */
         $model = $this->model;
-        $model::withoutSyncing(function () use ($model, $record, $attributes): void {
+        $model::withoutSyncing(function () use ($model, $record, $attributes, $column, $tenant): void {
             $row = $model::query()->whereKey($record->entity->id)->first() ?? new $model;
+            $owner = $column === null ? null : $row->getAttribute($column);
+            if ($row->exists && $column !== null && (! (is_string($owner) || is_int($owner)) || (string) $owner !== $tenant)) {
+                // A row with this key in ANOTHER tenant. Writing it would hand
+                // it to this one.
+                throw new \LogicException(sprintf('Record %s belongs to a different tenant than the one this write was authorized for.', $record->entity->id));
+            }
 
             // forceFill, not fill: the key and the tenant are deliberately not
             // fillable, and mass assignment would drop them silently. It is not
@@ -164,7 +173,11 @@ class ModelSyncableType implements PersistsRecords, SyncableType
             // decided what a client may set, before the engine ever saw it.
             $row->forceFill($attributes);
             $row->setAttribute($row->getKeyName(), $record->entity->id);
-            $row->save();
+            if ($row->save() === false) {
+                // An observer vetoed it. Answering "applied" would leave the
+                // log and the table disagreeing; failing rolls both back.
+                throw new \RuntimeException(sprintf('Saving %s %s was cancelled by the application.', $model, $record->entity->id));
+            }
         });
     }
 
@@ -176,25 +189,56 @@ class ModelSyncableType implements PersistsRecords, SyncableType
         return str_starts_with($space, $prefix) ? substr($space, strlen($prefix)) : $space;
     }
 
+    /**
+     * Through the model instance, not a query, so the application's own
+     * deleting/deleted observers run exactly as they do for any other delete.
+     */
     public function forget(EntityRecord $record): void
     {
         /** @var class-string<Model&SyncableModel> $model */
         $model = $this->model;
-        $model::withoutSyncing(function () use ($model, $record): void {
-            $model::query()->whereKey($record->entity->id)->delete();
+        $column = $this->prototype->syncScopeColumn();
+        $model::withoutSyncing(function () use ($model, $record, $column): void {
+            $query = $model::query()->whereKey($record->entity->id);
+            if ($column !== null) {
+                $query->where($column, $this->scopeOf($record->entity->space));
+            }
+            $query->first()?->delete();
         });
     }
 
+    /** The connection the application's table lives on. */
+    public function connectionName(): ?string
+    {
+        return $this->prototype->getConnectionName();
+    }
+
     /**
-     * A model carrying what sync holds, so the policy decides against the state
-     * the engine is about to merge into rather than a row that may be behind it.
+     * The model a policy decides against: the application's own row, carrying
+     * the values sync holds.
+     *
+     * The row, because a policy reads more than the synced fields - a locked
+     * flag, an owner, the tenant - and a model built from synced fields alone
+     * had those as null, which let through writes the real row forbids. The
+     * synced values on top, because they are what the engine is about to merge
+     * into, and the table can be behind them while a write is in flight.
      */
     private function hydrate(EntityRecord $record): Model
     {
-        $model = new $this->model;
+        $column = $this->prototype->syncScopeColumn();
+        $query = ($this->model)::query()->whereKey($record->entity->id);
+        if ($column !== null) {
+            $query->where($column, $this->scopeOf($record->entity->space));
+        }
+        $model = $query->first() ?? new $this->model;
+
         $attributes = [$model->getKeyName() => $record->entity->id];
+        if ($column !== null) {
+            $attributes[$column] = $this->scopeOf($record->entity->space);
+        }
         foreach ($this->prototype->syncFields() as $field) {
-            $attributes[$field] = $record->value($field)->value();
+            $value = $record->value($field);
+            $attributes[$field] = $value->exists ? $value->value() : null;
         }
         $model->forceFill($attributes)->exists = true;
 

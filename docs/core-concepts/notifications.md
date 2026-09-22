@@ -30,6 +30,15 @@ there, including the rows and fields a given reader is not allowed to see.
 The signal says *there is something new, up to here*. The reader then asks
 through `/delta`, which knows who it is.
 
+## Only after the commit
+
+The event is dispatched once the **outermost** transaction on the sync
+connection commits - not when the engine's own savepoint finishes. A host that
+wraps a save in `DB::transaction()` and then rolls back never announces it, and
+a device that pulls the moment it hears finds the write there. A listener that
+throws is logged and swallowed rather than escaping from your transaction after
+it has already committed.
+
 ## Keep polling even with push
 
 Delivery is at-most-once and unordered, so a missed signal must never mean
@@ -89,7 +98,11 @@ composer require cboxdk/laravel-ssrf cboxdk/laravel-webhook-signature
 A callback URL is tenant-supplied input aimed at your own network — the textbook
 SSRF sink, and DNS that answers publicly at check time and privately a moment
 later is the textbook way past a naive check. `cboxdk/laravel-ssrf` validates the
-URL and pins the connection to the addresses it resolved.
+URL and pins the connection to the addresses it resolved. That pin is held by
+cURL's own resolver, so the `curl` extension is required: without it the HTTP
+client would look the name up again after the check, which is exactly the window
+the pin closes. Boot refuses a webhook URL without it, and a delivery whose
+connection cannot be pinned is not sent.
 
 `cboxdk/laravel-webhook-signature` signs the POST and owns the secret and its
 rotation, so no secret appears in this package's config. A receiver that cannot
@@ -97,7 +110,8 @@ tell your delivery from anyone else's has learned only that someone knows its
 URL.
 
 Delivery is queued because the commit already happened: a slow or dead receiver
-is not the writer's problem.
+is not the writer's problem. Run it on an asynchronous queue connection - on the
+`sync` driver the POST happens inside the request that made the write.
 
 ## What a client does with the signal
 

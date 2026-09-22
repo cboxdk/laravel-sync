@@ -223,17 +223,25 @@ components:
             own memberships; a scope it does not have is refused.
         mutation_id:
           type: string
+          maxLength: 150
           description: |
             Client-generated and globally unique. Re-sending the same id returns
             the same answer and changes nothing - which is what makes a lost
             response safe to retry.
         id:
           type: string
+          maxLength: 150
           description: |
             On `update`, `delete` and `resolve`: the record's real id.
             On `create`: a handle the device made up. The server names the record
             and returns both `id` and `temp_id`; rewrite anything still queued.
-        replica: { type: string, description: 'This device. One acknowledgement stream per replica.' }
+        replica:
+          type: string
+          maxLength: 150
+          description: |
+            One stream of this device's writes, with its own `sequence` counter. Use a
+            separate replica per type and scope written to: the server numbers per
+            replica per space, and several scopes can map to one space.
         sequence:
           type: integer
           description: |
@@ -257,6 +265,18 @@ components:
         depends_on:
           type: string
           description: An earlier mutation id of this same replica, for an offline write chain.
+        on_conflict:
+          type: string
+          enum: [resolve, pull]
+          default: resolve
+          description: |
+            `resolve` — the server's resolver settles a conflict; by default it
+            preserves both values in a conflict group for someone to choose.
+            `pull` — refuse instead, store nothing, answer `pull_required`. The
+            device catches up, decides what its edit should now be, and sends the
+            SAME `mutation_id` and `sequence` again with `base_version` set to the
+            refusal's `record_version`. Fields the resolver settles as
+            client-wins or server-wins are settled exactly as before.
         operations:
           type: array
           items: { $ref: '#/components/schemas/Operation' }
@@ -276,12 +296,14 @@ components:
         temp_id: { type: string, description: 'Present when the server renamed a create''s handle.' }
         status:
           type: string
-          enum: [applied, partial, noop, conflict, rejected, validation_failed, precondition_failed, mutation_gap]
+          enum: [applied, partial, noop, conflict, rejected, validation_failed, precondition_failed, mutation_gap, pull_required]
           description: |
             `applied` / `partial` / `noop` — it landed.
             `conflict` — competing values were preserved; see `conflict_groups`.
             `rejected` / `validation_failed` / `precondition_failed` — it did not land, and the user has to be told.
             `mutation_gap` — the server has not seen everything before this; resume from `acknowledged_sequence` + 1.
+            `pull_required` — only with `on_conflict: pull`. Nothing was stored. `conflicts` names the
+            fields someone else changed; pull, rethink, and resend the same mutation based on `record_version`.
         record_version: { type: integer }
         commit_sequence: { type: integer }
         acknowledged_sequence: { type: integer, description: 'The highest sequence this replica has had accepted.' }

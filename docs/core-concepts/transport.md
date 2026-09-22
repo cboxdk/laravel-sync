@@ -55,8 +55,36 @@ nothing in the engine except the mutation's identity, so accepting it would let 
 client turn its own legitimate retry into a terminal error.
 
 Every processed outcome is **200**, including `conflict`, `rejected`,
-`precondition_failed`, `validation_failed` and `mutation_gap`. Those are answers,
-not failures.
+`precondition_failed`, `validation_failed`, `mutation_gap` and `pull_required`.
+Those are answers, not failures.
+
+### Letting the device decide: `on_conflict`
+
+By default the server's resolver settles a conflict, and the default resolver
+keeps both values in a conflict group for someone to choose between. That is the
+safe answer for a server that cannot ask anyone, and it needs a resolve UI.
+
+A device that *can* ask - or that knows its own merge rule - sends
+`"on_conflict": "pull"`. A field the resolver would have preserved is then
+refused instead: status `pull_required`, nothing stored, no receipt, no
+acknowledgement, no commit. `conflicts` names each field someone else changed
+(with their value, if the caller may read it) and `record_version` is the
+version that carries it.
+
+The device decides what its edit should now be and sends **the same
+`mutation_id` and `sequence`** again with `base_version` set to that
+`record_version`. Reusing the identity is safe precisely because the refusal
+stored nothing, and required because a new one could let an earlier attempt
+that did land be applied twice. Basing on `record_version` rather than on
+whatever the device pulled since matters: a newer pull can include changes to
+fields the refusal did not mention, and the resent write would overwrite them
+unseen. If there are any, the server just refuses again and names them.
+
+Pull never overrides the host. A field the resolver settles as client-wins or
+server-wins is settled exactly as before, and a `reject_on_conflict` still
+rejects. The whole mutation is refused, never half of it: applying the fresh
+fields of an edit the device is about to rethink would leave a state nobody
+chose.
 
 ```json
 {

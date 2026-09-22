@@ -25,6 +25,14 @@ interface SyncableModel
     public function syncScopeColumn(): ?string;
 
     /**
+     * The values these fields carry on the wire, in the model's serialized form.
+     *
+     * @param  list<string>  $fields
+     * @return array<string, mixed>
+     */
+    public function syncValues(array $fields): array;
+
+    /**
      * @template TReturn
      *
      * @param  \Closure(): TReturn  $callback

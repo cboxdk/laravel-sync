@@ -25,12 +25,59 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\ServiceProvider;
+use Psr\Log\LoggerInterface;
 
 class SyncServiceProvider extends ServiceProvider
 {
+    /**
+     * Put back every nested default a published config left out.
+     *
+     * mergeConfigFrom() merges one level deep. A host that publishes the file
+     * and trims `api` to the one key it cares about therefore deletes the
+     * others - and `api.middleware` going missing leaves the write endpoint,
+     * which takes a tenant-wide lock, with no throttle and no auth stack in
+     * front of it. Missing keys are filled at every depth; anything the host
+     * did set, including a list it shortened on purpose, is left exactly as it
+     * is.
+     */
+    private function fillMissingSettings(): void
+    {
+        if ($this->app->configurationIsCached()) {
+            return;
+        }
+        $config = $this->app->make(Repository::class);
+        $current = $config->get('sync');
+        $defaults = require __DIR__.'/../config/sync.php';
+        if (is_array($current) && is_array($defaults)) {
+            $config->set('sync', self::withDefaults($current, $defaults));
+        }
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $current
+     * @param  array<array-key, mixed>  $defaults
+     * @return array<array-key, mixed>
+     */
+    private static function withDefaults(array $current, array $defaults): array
+    {
+        if (array_is_list($defaults) && $defaults !== []) {
+            return $current;
+        }
+        foreach ($defaults as $key => $default) {
+            if (! array_key_exists($key, $current)) {
+                $current[$key] = $default;
+            } elseif (is_array($default) && is_array($current[$key]) && ! array_is_list($default)) {
+                $current[$key] = self::withDefaults($current[$key], $default);
+            }
+        }
+
+        return $current;
+    }
+
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/sync.php', 'sync');
+        $this->fillMissingSettings();
 
         $this->app->singleton(Store::class, function (Application $app): Store {
             $name = $this->setting($app, 'sync.connection');
@@ -50,7 +97,15 @@ class SyncServiceProvider extends ServiceProvider
 
         // bindIf, so a host that wants a different notifier - or none - binds
         // its own without fighting this one.
-        $this->app->bindIf(CommitObserver::class, Api\DispatchesSpaceAdvanced::class);
+        $this->app->bindIf(CommitObserver::class, function (Application $app): CommitObserver {
+            $store = $app->make(Store::class);
+
+            return new Api\DispatchesSpaceAdvanced(
+                $app->make(Dispatcher::class),
+                $app->make(LoggerInterface::class),
+                $store instanceof IlluminateStore ? $store->databaseConnection() : null,
+            );
+        });
 
         $this->app->singleton(Engine::class, fn (Application $app): Engine => new Engine(
             $app->make(Store::class),
@@ -169,6 +224,14 @@ class SyncServiceProvider extends ServiceProvider
                     $package,
                 ));
             }
+        }
+
+        // The SSRF guard pins the connection to the addresses it validated
+        // through cURL's own resolver. Without cURL, Guzzle falls back to a
+        // stream handler that resolves the name again - after the check - which
+        // is exactly the DNS-rebinding window the pin exists to close.
+        if (! extension_loaded('curl')) {
+            throw new \RuntimeException('sync.webhooks.url is set but the curl extension is not loaded. Webhook delivery pins the connection to the address it validated, and only cURL can hold that pin.');
         }
 
         $this->app->make(Dispatcher::class)

@@ -2,14 +2,27 @@
 
 declare(strict_types=1);
 
+use Cbox\Sync\Contracts\EntityValidator;
 use Cbox\Sync\Contracts\Store;
 use Cbox\Sync\Data\EntityRecord;
+use Cbox\Sync\Data\ValidationContext;
+use Cbox\Sync\Data\ValidationFailure;
+use Cbox\Sync\Data\ValidationResult;
+use Cbox\Sync\Engine;
+use Cbox\Sync\Laravel\Exceptions\SyncRejected;
+use Cbox\Sync\Laravel\IlluminateStore;
+use Cbox\Sync\Laravel\SyncRecorder;
 use Cbox\Sync\Laravel\Tests\Fixtures\Note;
 use Cbox\Sync\ValueObjects\EntityKey;
+use Cbox\Sync\ValueObjects\Replica;
+use Illuminate\Contracts\Auth\Factory;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function () {
+    // A shared database outlives the test: without this the second test to
+    // run on MySQL or PostgreSQL finds the first one's table.
+    Schema::dropIfExists('notes');
     Schema::create('notes', function (Blueprint $table) {
         $table->string('id')->primary();
         $table->string('team_id');
@@ -19,6 +32,10 @@ beforeEach(function () {
         $table->timestamps();
     });
     config()->set('sync.api.types', [Note::class]);
+});
+
+afterEach(function () {
+    Schema::dropIfExists('notes');
 });
 
 function storedNote(string $id): ?EntityRecord
@@ -91,4 +108,92 @@ it('does not record sync\'s own write back to the table', function () {
     });
 
     expect(storedNote('n5')->version->value)->toBe($before);
+});
+
+/**
+ * A refusal from the host's own validator used to return quietly, leaving the
+ * table with a value the log had refused - which every device would then
+ * contradict.
+ */
+it('refuses an ordinary save the validator refuses, and leaves the row alone', function () {
+    $note = makeNote('n6', ['title' => 'Fine']);
+    app()->instance(EntityValidator::class, new class implements EntityValidator
+    {
+        public function validate(ValidationContext $context): ValidationResult
+        {
+            return $context->proposed->value('title')->value() === 'Forbidden'
+                ? new ValidationResult([new ValidationFailure('no', 'No', 'title')])
+                : new ValidationResult;
+        }
+    });
+    foreach ([Engine::class, SyncRecorder::class] as $abstract) {
+        app()->forgetInstance($abstract);
+    }
+
+    $note->title = 'Forbidden';
+    expect(fn () => $note->save())->toThrow(SyncRejected::class);
+
+    expect(Note::find('n6')->title)->toBe('Fine')
+        ->and(storedNote('n6')->value('title')->value())->toBe('Fine');
+});
+
+/**
+ * A reused instance keeps wasRecentlyCreated and the previous save's changes.
+ * Either one used to push stale values over newer ones.
+ */
+it('records only what this save changed, on an instance that has been saved before', function () {
+    $note = makeNote('n7', ['title' => 'Mine', 'status' => 'open']);
+    // Someone else moves the status on, through another instance.
+    tap(Note::find('n7'), fn (Note $other) => $other->update(['status' => 'done']));
+
+    $note->title = 'Mine, edited';
+    $note->save();
+
+    expect(storedNote('n7')->value('status')->value())->toBe('done')
+        ->and(storedNote('n7')->value('title')->value())->toBe('Mine, edited');
+});
+
+/** The tenant is part of the key in the log; moving it left the old tenant holding a live copy. */
+it('refuses to move a synced record to another tenant', function () {
+    $note = makeNote('n8', ['title' => 'Stays']);
+
+    $note->team_id = 'someone-else';
+    expect(fn () => $note->save())->toThrow(LogicException::class, 'cannot move between tenants');
+
+    expect(Note::find('n8')->team_id)->toBe('owners');
+});
+
+/**
+ * Every trusted write shares one stream, and its next number is read before
+ * the engine takes the space lock - so two writers can pick the same one. The
+ * loser stored nothing and goes again, instead of failing a save that was
+ * never in conflict with anything.
+ */
+it('tries again when another trusted write took its sequence number first', function () {
+    makeNote('n9', ['title' => 'Before']);
+    $stale = new class(app('db')->connection()) extends IlluminateStore
+    {
+        public bool $lied = false;
+
+        public function acknowledged(string $space, Replica $replica): int
+        {
+            $real = parent::acknowledged($space, $replica);
+            if (! $this->lied && $real > 0) {
+                // As read by a writer that lost the race to another.
+                $this->lied = true;
+
+                return $real - 1;
+            }
+
+            return $real;
+        }
+    };
+    app()->instance(SyncRecorder::class, new SyncRecorder($stale, app(Engine::class), app(Factory::class)));
+
+    $note = Note::find('n9');
+    $note->title = 'After';
+    $note->save();
+
+    expect($stale->lied)->toBeTrue()
+        ->and(storedNote('n9')->value('title')->value())->toBe('After');
 });

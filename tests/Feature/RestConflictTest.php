@@ -9,6 +9,9 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function () {
+    // A shared database outlives the test: without this the second test to
+    // run on MySQL or PostgreSQL finds the first one's table.
+    Schema::dropIfExists('notes');
     Schema::create('notes', function (Blueprint $table) {
         $table->string('id')->primary();
         $table->string('team_id');
@@ -25,6 +28,10 @@ beforeEach(function () {
 
         return response()->json(['id' => $note->id, 'title' => $note->title]);
     });
+});
+
+afterEach(function () {
+    Schema::dropIfExists('notes');
 });
 
 function seedNote(string $id, string $title = 'Original'): Note
@@ -87,4 +94,18 @@ it('leaves two writers to different fields alone', function () {
     $note = Note::find('n5');
     expect($note->title)->toBe('Mine');
     expect($note->status)->toBe('done');
+});
+
+/**
+ * The log refuses BEFORE the row is written. Recording after the write left
+ * the losing value in the table and the winning one in the log - measured:
+ * a 409 with the table holding "Mine".
+ */
+it('leaves the table holding the winning value when it answers 409', function () {
+    seedNote('n6');
+    tap(Note::find('n6'), fn (Note $note) => $note->update(['title' => 'Theirs']));
+
+    $this->patchJson('/api/notes/n6', ['title' => 'Mine', 'base_version' => 1])->assertStatus(409);
+
+    expect(Note::find('n6')->title)->toBe('Theirs');
 });

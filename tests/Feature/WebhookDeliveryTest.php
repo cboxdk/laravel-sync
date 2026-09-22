@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Cbox\Ssrf\Contracts\UrlGuard;
 use Cbox\Ssrf\SsrfServiceProvider;
 use Cbox\Sync\Laravel\Events\SpaceAdvanced;
 use Cbox\Sync\Laravel\Webhooks\DeliverSpaceAdvanced;
@@ -64,6 +65,35 @@ it('sends the watermark, signed, and nothing else', function () {
 it('does nothing when no webhook is configured', function () {
     Http::fake();
     config()->set('sync.webhooks.url', null);
+
+    deliverer()->handle(new SpaceAdvanced('team-1', 7));
+
+    Http::assertNothingSent();
+});
+
+/**
+ * A guard that validates but cannot pin leaves a second DNS lookup after the
+ * check - the rebinding window. Nothing goes out unpinned.
+ */
+it('refuses to send when the connection cannot be pinned to the validated address', function () {
+    Http::fake();
+    config()->set('sync.webhooks.url', 'https://example.com/sync-hook');
+    $this->app->instance(UrlGuard::class, new class implements UrlGuard
+    {
+        public function assertSafe(string $url, ?array $allowedSchemes = null, bool $allowCredentials = false): void {}
+
+        public function isSafe(string $url, ?array $allowedSchemes = null, bool $allowCredentials = false): bool
+        {
+            return true;
+        }
+
+        public function assertSafeRedirect(string $url, ?array $allowedSchemes = null, bool $allowCredentials = false): void {}
+
+        public function pinnedOptions(string $url, ?array $allowedSchemes = null, bool $allowCredentials = false): array
+        {
+            return ['allow_redirects' => false];
+        }
+    });
 
     deliverer()->handle(new SpaceAdvanced('team-1', 7));
 
