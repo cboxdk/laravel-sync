@@ -11,12 +11,13 @@ Requires `cboxdk/sync` 0.9.
 
 ### Fixed - the model integration
 
-- **A conflict or a refusal no longer leaves the losing value in your table.** An update is recorded on `updating`, before the row is written, so a 409, a 412 or a 422 stops the save. It also carries only this save's changes; a reused instance used to push stale attributes over newer ones.
+- **A conflict or a refusal no longer leaves the losing value in your table.** `save()` and its recording share one transaction, so a 409, a 412 or a 422 rolls the row back, a refused create leaves no row, and an observer that cancels the save takes the recording back. An update carries only this save's changes; a reused instance used to push stale attributes over newer ones.
 - **Every outcome is handled.** A validation failure or rejection raises `SyncRejected` (422) instead of returning quietly.
-- **Casts round-trip.** Values travel in the model's serialized form, so an `array` field is a JSON object in the log instead of a string that was encoded again on the way back.
+- **Values round-trip exactly.** The log holds what the column holds - a date keeps its day in any timezone, an accessor's presentation stays out, a column the database defaulted is logged as its value rather than as null (which broke every later push to a NOT NULL column). JSON columns travel as the JSON they hold.
+- A server write that loses a race no longer leaves a conflict group behind.
 - **Policies see the real row**, with the synced values laid over it, instead of a model with every non-synced attribute null.
 - **Refused by name rather than half-done:** moving a record between tenants, restoring a soft-deleted record, a model on a different connection from the sync store, a model that declares nothing to sync. Hidden fields and the tenant column are never synced.
-- **`If-Match` is a whole-record precondition (412)**, as HTTP defines it; `base_version` keeps field-level merging.
+- **`If-Match` is a whole-record precondition (412)**, as HTTP defines it, accepting a list or `*` and failing when it cannot be read; `base_version` keeps field-level merging. Both apply only to the model the route bound, not to everything saved during the request.
 - Writing back to the table: an unset field becomes NULL, a cancelled save rolls the write back, a row in another tenant is refused, and deletes go through the model so its observers run. The table is written only when the record actually changed.
 - Record ids are UUIDs (version 8, derived from the mutation), so a `uuid` key column holds them.
 
