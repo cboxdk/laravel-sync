@@ -19,10 +19,12 @@ it('brings a schema from before stream positions up to date', function () {
     if (config('database.connections.sync-testing.driver') !== 'sqlite') {
         $this->markTestSkipped('Dropping columns to recreate the old schema is simplest on SQLite.');
     }
+    // The schema exactly as cboxdk/sync 0.8.0 installed it.
     $db = DB::connection('sync-testing');
-    $db->statement('DROP INDEX IF EXISTS sync_receipts_stream_position');
-    $db->statement('ALTER TABLE sync_receipts DROP COLUMN sequence');
-    $db->statement('ALTER TABLE sync_receipts DROP COLUMN replica_id');
+    foreach (['sync_commits', 'sync_conflict_groups', 'sync_fields', 'sync_records', 'sync_receipts', 'sync_streams', 'sync_spaces', 'sync_bootstrap_sessions'] as $table) {
+        $db->statement('DROP TABLE IF EXISTS '.$table);
+    }
+    $db->getPdo()->exec((string) file_get_contents(dirname(__DIR__).'/Fixtures/sync-0.8.0-schema.sqlite.sql'));
 
     (require dirname(__DIR__, 2).'/database/migrations/2026_09_22_000000_reconcile_sync_schema_for_sync_0_9.php')->up();
 

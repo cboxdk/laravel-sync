@@ -43,3 +43,20 @@ it('still discloses a conflicting value for a row the caller can see', function 
     expect($conflict->json('status'))->toBe('conflict');
     expect($conflict->json('conflicts.0.current.value'))->toBe('from alice');
 });
+
+/**
+ * A replay is answered from its receipt before its space is resolved, and what
+ * it may disclose was judged under whatever scope the caller sent. The same
+ * caller replaying a write from one tenant under another scope it may read got
+ * the first tenant's values through the second's rules.
+ */
+it('judges what a replay may disclose by the space the write was in', function () {
+    $push = fn (string $scope, array $mutation) => $this->postJson('/sync/push', ['type' => 'tasks', 'scope' => $scope] + $mutation, ['X-Test-Principal' => 'alice']);
+    $push('team-1', mutation('m1', 'open-1', 1, 'create', 0, [setOp('title', 'visible'), setOp('status', 'open')]))->assertOk();
+    $push('team-1', mutation('m2', 'open-1', 2, 'update', 1, [setOp('title', 'CONFIDENTIAL team-1 value')]))->assertOk();
+    $push('team-1', mutation('m3', 'open-1', 3, 'update', 1, [setOp('title', 'from another device')]))->assertOk();
+
+    $replay = $push('elsewhere', mutation('m3', 'open-1', 3, 'update', 1, [setOp('title', 'from another device')]));
+
+    expect($replay->getContent())->not->toContain('CONFIDENTIAL team-1 value');
+});

@@ -202,6 +202,7 @@ class SyncService implements SyncEndpoints
         $canonical = $this->store->record($entity);
         $rowIsReadable = $canonical !== null
             && ! $canonical->deleted
+            && $this->scopeReaches($type, $principal, $scope, $entity->space)
             && $type->mayRead($principal, $scope)
             && $type->view($principal, $scope)->includes($canonical);
 
@@ -222,6 +223,21 @@ class SyncService implements SyncEndpoints
         }
 
         return $identity + ResultMapper::toWire($result, $type->readableFields($principal), $groups, $rowIsReadable);
+    }
+
+    /**
+     * Whether the scope the caller sent maps to the space the record is in. A
+     * replay is answered from its receipt before the space is resolved, and
+     * judging readability by another scope the caller may read disclosed the
+     * first tenant's values through the second's rules.
+     */
+    private function scopeReaches(SyncableType $type, SyncPrincipal $principal, ?string $scope, string $space): bool
+    {
+        try {
+            return $type->space($principal, $scope) === $space;
+        } catch (SyncRequestRejected) {
+            return false;
+        }
     }
 
     /**

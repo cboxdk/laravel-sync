@@ -8,6 +8,8 @@ Requires `cboxdk/sync` 0.9.
 
 - **Run `php artisan migrate`.** A new migration brings an existing installation up to cboxdk/sync 0.9's schema - receipts carrying their stream position, retention columns, identifiers in a binary collation on MySQL (which copies each table: use a maintenance window) - and without it every write after the upgrade fails. If you published the migrations, publish them again.
 - A hidden field is never synced, now also when a model lists it in `$syncFields`.
+- A replayed push discloses a conflict's values only when the scope it was sent with maps to the space the write was in; the same caller could replay a write under another scope it may read and get the first tenant's hidden value.
+- `accepted_versions` and `decisions` are JSON objects even when empty, and `commit_sequence` is documented as nullable, as `openapi.yaml` says.
 - The delta change kinds are `upsert`, `deleted` and `removed_from_scope`, as the endpoint has always sent them; `openapi.yaml` and the agent brief said `remove`.
 
 ### Added

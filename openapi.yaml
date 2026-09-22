@@ -326,7 +326,7 @@ components:
             `pull_required` — only with `on_conflict: pull`. Nothing was stored. `conflicts` names the
             fields someone else changed; pull, rethink, and resend the same mutation based on `record_version`.
         record_version: { type: integer }
-        commit_sequence: { type: integer }
+        commit_sequence: { type: [integer, 'null'], description: 'Null when no commit was written - a gap, pull_required, receipt_pruned.' }
         acknowledged_sequence: { type: integer, description: 'The highest sequence this replica has had accepted.' }
         reason: { type: [string, 'null'] }
         decisions:

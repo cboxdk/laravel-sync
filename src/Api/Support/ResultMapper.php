@@ -56,13 +56,15 @@ class ResultMapper
                 $accepted[$field] = $version->value;
             }
         }
-        $body['accepted_versions'] = $accepted;
+        // An object even when empty: a JSON array would contradict the
+        // description, and strict clients refuse it.
+        $body['accepted_versions'] = $accepted === [] ? new \stdClass : $accepted;
 
         $decisions = [];
         foreach ($result->decisions as $field => $decision) {
             $decisions[$field] = $decision->value;
         }
-        $body['decisions'] = $decisions;
+        $body['decisions'] = $decisions === [] ? new \stdClass : $decisions;
 
         $conflicts = [];
         foreach ($result->conflicts as $field => $conflict) {
