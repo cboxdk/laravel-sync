@@ -21,6 +21,7 @@ use Cbox\Sync\ValueObjects\MutationSequence;
 use Cbox\Sync\ValueObjects\RecordVersion;
 use Cbox\Sync\ValueObjects\Replica;
 use Illuminate\Contracts\Auth\Factory;
+use Illuminate\Database\Eloquent\Casts\AsArrayObject;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
@@ -38,9 +39,18 @@ class Card extends Model
 
     protected $keyType = 'string';
 
-    protected $fillable = ['title', 'status', 'due_on'];
+    protected $fillable = ['title', 'status', 'due_on', 'due_at', 'done', 'priority', 'amount', 'counter', 'opts', 'secret'];
 
-    protected $casts = ['due_on' => 'date'];
+    protected $casts = [
+        'due_on' => 'date',
+        'due_at' => 'datetime',
+        'done' => 'boolean',
+        'priority' => 'integer',
+        'amount' => 'decimal:2',
+        'counter' => 'integer',
+        'opts' => AsArrayObject::class,
+        'secret' => 'encrypted',
+    ];
 }
 
 class ShoutingCard extends Card
@@ -59,6 +69,13 @@ beforeEach(function () {
         $table->string('title')->nullable();
         $table->string('status')->default('open');
         $table->date('due_on')->nullable();
+        $table->dateTime('due_at')->nullable();
+        $table->boolean('done')->default(false);
+        $table->integer('priority')->nullable();
+        $table->decimal('amount', 8, 2)->nullable();
+        $table->integer('counter')->default(0);
+        $table->json('opts')->nullable();
+        $table->text('secret')->nullable();
         $table->timestamps();
     });
 });
@@ -109,8 +126,8 @@ it('logs the stored value, not what an accessor makes of it', function () {
     expect(logged('a1')?->value('title')->value())->toBe('hello');
 });
 
-/** A listener registered after the trait could cancel a save the log had already taken. */
-it('takes the recording back when a later listener cancels the save', function () {
+/** A save a listener cancels is not recorded, and leaves the log as it was. */
+it('records nothing for a save a listener cancels', function () {
     $card = card('c1', ['title' => 'before']);
     Card::updating(fn (): bool => false);
 
@@ -215,4 +232,76 @@ it('leaves no conflict group behind when a server write races a device', functio
 
     expect(logged('g1')?->value('title')->value())->toBe('admin')
         ->and(app(Store::class)->openGroups(new EntityKey('cards:owners', 'cards', 'g1')))->toBe([]);
+});
+
+/**
+ * One representation whatever the driver and the write path. Raw attributes
+ * were 1 on SQLite, true on PostgreSQL and "4" from a form, and a device
+ * sending the same value as a number met it as a conflict.
+ */
+it('logs typed values the same way on every driver and every write path', function () {
+    $card = card('v1', ['done' => true, 'priority' => 3, 'amount' => 12.5]);
+    expect(logged('v1')?->value('done')->value())->toBeTrue()
+        ->and(logged('v1')?->value('priority')->value())->toBe(3)
+        ->and(logged('v1')?->value('amount')->value())->toBe('12.50');
+
+    $card->update(['priority' => '4', 'amount' => '13.5', 'done' => '0']);
+    expect(logged('v1')?->value('done')->value())->toBeFalse()
+        ->and(logged('v1')?->value('priority')->value())->toBe(4)
+        ->and(logged('v1')?->value('amount')->value())->toBe('13.50');
+});
+
+/** increment() writes without save(); a refusal while recording it used to leave the row incremented. */
+it('takes an increment back when the log refuses it', function () {
+    $card = card('n1', ['title' => 'x']);
+    app()->instance(EntityValidator::class, new class implements EntityValidator
+    {
+        public function validate(ValidationContext $context): ValidationResult
+        {
+            return $context->proposed->value('counter')->value() === 1
+                ? new ValidationResult([new ValidationFailure('no', 'No')])
+                : new ValidationResult;
+        }
+    });
+    foreach ([Engine::class, SyncRecorder::class] as $abstract) {
+        app()->forgetInstance($abstract);
+    }
+
+    expect(fn () => $card->increment('counter'))->toThrow(SyncRejected::class);
+    expect(Card::find('n1')?->counter)->toBe(0);
+});
+
+/** A delete refused while recording used to leave the row gone and the log saying it exists. */
+it('puts the row back when the log refuses a delete', function () {
+    Route::middleware(SubstituteBindings::class)->delete('/api/cards/{card}', function (Card $card) {
+        $card->delete();
+
+        return response()->noContent();
+    });
+    $card = card('x1', ['title' => 'v1']);
+    $card->update(['title' => 'v2']);
+
+    $this->deleteJson('/api/cards/x1', [], ['If-Match' => '"1"'])->assertStatus(412);
+
+    expect(Card::find('x1'))->not->toBeNull()->and(logged('x1')?->deleted)->toBeFalse();
+});
+
+/** A device writes a date as ISO 8601; raw, it failed on MySQL and was stored verbatim on SQLite. */
+it('stores a date a device sends in the form the column takes', function () {
+    card('i1', ['title' => 'x']);
+
+    Card::withoutSyncing(fn () => Card::find('i1')?->syncFill(['due_at' => '2026-09-23T10:00:00.000000Z'])->save());
+
+    expect(Card::find('i1')?->getRawOriginal('due_at'))->toStartWith('2026-09-23 10:00:00');
+});
+
+it('carries an AsArrayObject column as the document it holds', function () {
+    card('o1', ['opts' => ['a' => 1]]);
+
+    expect(logged('o1')?->value('opts')->value())->toEqual((object) ['a' => 1]);
+});
+
+/** A device has no key to write an encrypted column, and sending it decrypted would undo the encryption. */
+it('never syncs an encrypted column', function () {
+    expect((new Card)->syncFields())->not->toContain('secret');
 });

@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Cbox\Sync\Laravel;
 
+use Illuminate\Database\Eloquent\Casts\AsArrayObject;
+use Illuminate\Database\Eloquent\Casts\AsCollection;
+use Illuminate\Database\Eloquent\Casts\AsEnumArrayObject;
+use Illuminate\Database\Eloquent\Casts\AsEnumCollection;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -71,10 +75,15 @@ trait Syncable
     }
 
     /**
-     * The casts whose stored form is JSON text. Their value travels as the
-     * JSON it holds, so a device sees an object rather than a string of one.
+     * Class casts whose stored form is JSON text. Their value travels as the
+     * JSON it holds, like the array and json casts.
      */
-    private const SYNC_JSON_CASTS = ['array', 'json', 'json:unicode', 'object', 'collection'];
+    private const SYNC_JSON_CLASS_CASTS = [
+        AsArrayObject::class,
+        AsCollection::class,
+        AsEnumArrayObject::class,
+        AsEnumCollection::class,
+    ];
 
     /**
      * Save, with the row and the log moving together.
@@ -107,6 +116,37 @@ trait Syncable
         } catch (Exceptions\SaveCancelled) {
             return false;
         }
+    }
+
+    /**
+     * Delete, with the row and the log moving together - a refusal while
+     * recording the delete puts the row back.
+     */
+    public function delete(): ?bool
+    {
+        if (self::$syncSuspended) {
+            return parent::delete();
+        }
+
+        return $this->getConnection()->transaction(fn (): ?bool => parent::delete());
+    }
+
+    /**
+     * increment() and decrement() write without save(), so they get the same
+     * transaction here: the recording happens on `updated`, after the query.
+     *
+     * @param  string  $column
+     * @param  float|int  $amount
+     * @param  array<array-key, mixed>  $extra
+     * @param  string  $method
+     */
+    protected function incrementOrDecrement($column, $amount, $extra, $method): mixed
+    {
+        if (self::$syncSuspended) {
+            return parent::incrementOrDecrement($column, $amount, $extra, $method);
+        }
+
+        return $this->getConnection()->transaction(fn (): mixed => parent::incrementOrDecrement($column, $amount, $extra, $method));
     }
 
     /**
@@ -187,13 +227,15 @@ trait Syncable
     }
 
     /**
-     * The values these fields carry on the wire: what the column holds.
+     * The values these fields carry on the wire.
      *
-     * The stored form, not the cast or accessor form. An accessor's output is
-     * presentation - recording it put upper-cased text in the log and then in
-     * the column - and a date serialized to UTC moved a Copenhagen date back a
-     * day. JSON columns are the one exception: they travel as the JSON they
-     * hold, so a device sees a document, not a string.
+     * One representation, whatever the driver and whatever the write path:
+     * booleans, integers, floats and decimals as their cast type (a raw
+     * attribute is 1 on SQLite, true on PostgreSQL and "1" from a form, and
+     * the engine compares values exactly); dates in the model's storage format
+     * (not UTC-serialized, which moved a Copenhagen date back a day); JSON
+     * columns as the JSON they hold; everything else as the column holds it,
+     * so an accessor's presentation never reaches the log.
      *
      * A field the row has no attribute for is left out, rather than recorded
      * as null.
@@ -206,22 +248,47 @@ trait Syncable
         $raw = $this->getAttributes();
         $values = [];
         foreach ($fields as $field) {
-            if (! array_key_exists($field, $raw)) {
-                continue;
+            if (array_key_exists($field, $raw)) {
+                $values[$field] = $raw[$field] === null ? null : $this->syncWireValue($field, $raw[$field]);
             }
-            $value = $raw[$field];
-            if (is_string($value) && $this->hasCast($field, self::SYNC_JSON_CASTS)) {
-                $value = json_decode($value, false, 512, JSON_THROW_ON_ERROR);
-            }
-            $values[$field] = $value;
         }
 
         return $values;
     }
 
+    private function syncWireValue(string $field, mixed $value): mixed
+    {
+        if ($this->syncStoresJson($field)) {
+            return is_string($value) ? json_decode($value, false, 512, JSON_THROW_ON_ERROR) : $value;
+        }
+        if ($this->isDateCastable($field)) {
+            $type = $this->syncCastType($field);
+
+            return $type === 'date' || $type === 'immutable_date'
+                ? $this->asDateTime($value)->format('Y-m-d')
+                : $this->fromDateTime($value);
+        }
+
+        return match ($this->syncCastType($field)) {
+            'bool', 'boolean' => (bool) $value,
+            'int', 'integer' => is_numeric($value) ? (int) $value : $value,
+            'real', 'float', 'double' => is_numeric($value) ? (float) $value : $value,
+            'decimal' => $this->castAttribute($field, $value),
+            'string' => is_scalar($value) ? (string) $value : $value,
+            default => $this->isEnumCastable($field) ? $this->syncEnumValue($field, $value) : $value,
+        };
+    }
+
+    private function syncEnumValue(string $field, mixed $value): mixed
+    {
+        $enum = $this->castAttribute($field, $value);
+
+        return $enum instanceof \BackedEnum ? $enum->value : $value;
+    }
+
     /**
-     * The inverse of syncValues(): put values from the log into the row as the
-     * column holds them, past casts and mutators.
+     * The inverse of syncValues(): put values from the log into the row in the
+     * form the column stores, past mutators.
      *
      * @param  array<string, mixed>  $values
      */
@@ -229,14 +296,47 @@ trait Syncable
     {
         $raw = [];
         foreach ($values as $field => $value) {
-            if ($value !== null && ($this->hasCast($field, self::SYNC_JSON_CASTS) || is_array($value) || is_object($value))) {
+            if ($value !== null && ($this->syncStoresJson($field) || is_array($value) || is_object($value))) {
                 $value = json_encode($value, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            } elseif ($value !== null && $this->isDateCastable($field)) {
+                // Whatever date form a device sent - ISO 8601, say - in the
+                // form the column takes. Raw, it failed on MySQL outright.
+                $value = $this->fromDateTime($value);
             }
             $raw[$field] = $value;
         }
         $this->setRawAttributes(array_merge($this->getAttributes(), $raw));
 
         return $this;
+    }
+
+    private function syncStoresJson(string $field): bool
+    {
+        if ($this->isJsonCastable($field)) {
+            return true;
+        }
+        $cast = $this->getCasts()[$field] ?? null;
+        if (! is_string($cast)) {
+            return false;
+        }
+        $class = explode(':', $cast, 2)[0];
+
+        return in_array($class, self::SYNC_JSON_CLASS_CASTS, true);
+    }
+
+    private function syncCastType(string $field): string
+    {
+        $cast = $this->getCasts()[$field] ?? null;
+
+        return is_string($cast) ? strtolower(trim(explode(':', $cast, 2)[0])) : '';
+    }
+
+    /** Whether the column is encrypted at rest; such a field is never synced. */
+    private function syncIsEncrypted(string $field): bool
+    {
+        $cast = $this->getCasts()[$field] ?? null;
+
+        return is_string($cast) && (str_starts_with(strtolower($cast), 'encrypted') || str_contains($cast, 'AsEncrypted'));
     }
 
     /** The entity type written into every synced key. Never change it once rows exist. */
@@ -259,16 +359,20 @@ trait Syncable
         // disagrees with where the record actually is.
         $tenant = $this->syncScopeColumn();
 
+        // An encrypted column cannot be written by a device - it has no key -
+        // and sending it decrypted would undo the point of encrypting it.
+        $encrypted = array_values(array_filter(array_keys($this->getCasts()), fn (string $field): bool => $this->syncIsEncrypted($field)));
+
         $declared = $this->syncDeclared('syncFields');
         if (is_array($declared) && $declared !== []) {
-            return array_values(array_diff(array_filter($declared, is_string(...)), [$tenant]));
+            return array_values(array_diff(array_filter($declared, is_string(...)), [$tenant], $encrypted));
         }
 
         // Fillable is the host's own statement of what a request may set, which
         // is the same question this is asking. Hidden is its statement of what
         // a response must never show, so a hidden fillable field is not synced:
         // syncing it would put it in every device's database.
-        $fillable = array_values(array_diff($this->getFillable(), $this->getHidden(), [$tenant]));
+        $fillable = array_values(array_diff($this->getFillable(), $this->getHidden(), [$tenant], $encrypted));
         if ($fillable !== []) {
             return $fillable;
         }

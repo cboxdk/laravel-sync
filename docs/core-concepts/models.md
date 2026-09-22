@@ -38,13 +38,23 @@ guessed at: every column would include whatever the table holds - tokens, intern
 notes, columns added next year - and would put it on every device. A field in
 `$hidden` is never synced for the same reason.
 
-Values travel in their **stored** form - what the column holds - and are written
-back the same way, past casts and mutators. That is what makes the round trip
-exact: a date stays the date it is whatever the app timezone, an accessor's
-presentation never reaches the log, and a column the database defaulted is logged
-as the value it got. JSON columns (`array`, `json`, `object`, `collection` casts)
-are the one exception: they travel as the JSON they hold, so a device sees a
-document rather than a string. An encrypted column travels encrypted.
+Values travel in **one** form, whatever the database driver and whatever wrote
+them, and are written back past mutators:
+
+| Cast | On the wire |
+|---|---|
+| `boolean`, `integer`, `float` | the typed value - `true`, `4`, `1.5` |
+| `decimal:2` | the formatted string, `"13.50"` |
+| `date` | `"2026-03-10"` |
+| `datetime` and friends | the model's storage format, `"2026-03-10 09:30:00"`; a device may send ISO 8601 |
+| `array`, `json`, `object`, `collection`, `AsArrayObject`, `AsCollection` | the JSON document itself |
+| backed enum | its value |
+| anything else | what the column holds |
+
+An accessor's presentation never reaches the log, a column the database defaulted
+is logged as the value it got, and a date keeps its day whatever the app
+timezone. An **encrypted** column is never synced: a device has no key to write
+it, and sending it decrypted would undo the encryption.
 
 Authorization is **not** here. It goes to the Gate, so your existing policy
 decides:
@@ -174,13 +184,19 @@ Sync's own write back to your table does not count as a new edit; that is what
 `Note::withoutSyncing()` marks, and you can use it yourself for an import that
 should not be replayed to devices.
 
-`save()` runs in one transaction with its recording. An update carries only the
-attributes this save changed; a create is read back from the table so the log
-has the defaults the database filled in. A conflict or refusal while recording
-rolls the row back, and an observer that cancels the save rolls back the
-recording - so no order of listeners leaves the table and the log disagreeing.
+`save()`, `delete()`, `increment()` and `decrement()` each run in one
+transaction with their recording, so a conflict or refusal while recording rolls
+the row back. An update carries only the attributes this save changed; a create
+is read back from the table so the log has the defaults the database filled in.
 A model that overrides `save()` itself keeps recording but loses the shared
 transaction.
+
+### What does not record
+
+Recording hangs off the model's own events, so a write that skips them skips
+sync too: `Model::query()->update()`, `DB::table()`, `saveQuietly()` and
+`incrementEach()`. Devices never hear about those writes. Use the model, or wrap
+bulk work in a loop over models when devices need to see it.
 
 Three things are refused rather than half-done:
 

@@ -11,9 +11,9 @@ Requires `cboxdk/sync` 0.9.
 
 ### Fixed - the model integration
 
-- **A conflict or a refusal no longer leaves the losing value in your table.** `save()` and its recording share one transaction, so a 409, a 412 or a 422 rolls the row back, a refused create leaves no row, and an observer that cancels the save takes the recording back. An update carries only this save's changes; a reused instance used to push stale attributes over newer ones.
+- **A conflict or a refusal no longer leaves the losing value in your table.** `save()`, `delete()`, `increment()` and `decrement()` share one transaction with their recording, so a 409, a 412 or a 422 rolls the row back and a refused create leaves no row. An update carries only this save's changes; a reused instance used to push stale attributes over newer ones.
 - **Every outcome is handled.** A validation failure or rejection raises `SyncRejected` (422) instead of returning quietly.
-- **Values round-trip exactly.** The log holds what the column holds - a date keeps its day in any timezone, an accessor's presentation stays out, a column the database defaulted is logged as its value rather than as null (which broke every later push to a NOT NULL column). JSON columns travel as the JSON they hold.
+- **Values round-trip exactly, in one form on every driver.** Booleans, integers and decimals travel typed rather than as whatever the driver or a form handed over; dates keep their day in any timezone and a device may send ISO 8601; an accessor's presentation stays out; a column the database defaulted is logged as its value rather than as null (which broke every later push to a NOT NULL column); JSON columns, including `AsArrayObject` and `AsCollection`, travel as the JSON they hold. **Breaking:** the date wire format is the model's storage format, not ISO 8601. Encrypted columns are no longer synced.
 - A server write that loses a race no longer leaves a conflict group behind.
 - **Policies see the real row**, with the synced values laid over it, instead of a model with every non-synced attribute null.
 - **Refused by name rather than half-done:** moving a record between tenants, restoring a soft-deleted record, a model on a different connection from the sync store, a model that declares nothing to sync. Hidden fields and the tenant column are never synced.
