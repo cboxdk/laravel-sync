@@ -55,7 +55,7 @@ jobs:
           git diff --exit-code -- docs/requirements.md
 
   databases:
-    name: ${{ matrix.database }}
+    name: ${{ matrix.database }} / PHP ${{ matrix.php }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cboxdk/php-baseimages/php-cli:${{ matrix.php || '8.4' }}-bookworm-dev-v1
@@ -63,6 +63,7 @@ jobs:
       fail-fast: false
       matrix:
         database: [postgres, mysql]
+        php: ['8.4', '8.5']
 
     services:
       postgres:

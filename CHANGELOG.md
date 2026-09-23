@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.1 - Unreleased
+
+### Documentation
+
+- The API's own contracts are documented - `SyncableType`, `NormalizesValues`, `PersistsRecords`, `SyncableTypes`, `SyncPrincipals`, `SyncEndpoints`, `AuthorizesSpaceChannel`, `BaseSyncableType` and the in-transaction authorization wrapper - and `BUILD-STATUS.md` describes 0.7.
+- `openapi.yaml` describes 429 and the `Retry-After` header, and says plainly that a 401 or 429 is your own middleware's answer, whatever shape its body takes.
+
+### Tests
+
+- The database leg of CI runs on PHP 8.4 and 8.5.
+
 ## 0.7.0 - 2026-09-22
 
 Requires `cboxdk/sync` 0.9.

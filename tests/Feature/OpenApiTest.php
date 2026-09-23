@@ -320,7 +320,7 @@ it('describes a validation failure exactly as it answers one', function () {
 it('declares every status an endpoint can answer with', function () {
     foreach (spec()['paths'] as $path => $operations) {
         expect(array_map('strval', array_keys($operations['post']['responses'])))
-            ->toBe(['200', '401', '403', '404', '409', '413', '415', '422', '503'], $path);
+            ->toBe(['200', '401', '403', '404', '409', '413', '415', '422', '429', '503'], $path);
     }
 });
 

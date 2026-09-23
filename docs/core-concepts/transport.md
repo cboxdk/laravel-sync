@@ -161,7 +161,7 @@ a permission change does not orphan a client's unflushed queue.
 
 | HTTP | `error` | What the client does |
 |---|---|---|
-| 401 | `unauthenticated` | authenticate |
+| 401 | your middleware's, or `unauthenticated` | authenticate. Your authentication middleware answers before this package, so the body may be its own |
 | 403 | `forbidden`, `field_not_writable` | stop; this will not succeed |
 | 404 | `unknown_type` | stop |
 | 409 | `reset_required` | reset that view and bootstrap again; `reason` says why |
@@ -170,6 +170,7 @@ a permission change does not orphan a client's unflushed queue.
 | 413 / 415 | `body_too_large`, `unsupported_media_type` | fix the request |
 | 422 | `invalid_request` | fix the request |
 | 422 | `invalid_field_value`, `too_many_operations` | stop; the write is final - a value the model or the table cannot hold is refused, and nothing of it is kept |
+| 429 | your middleware's | rate-limited before this package ran; the body is your middleware's. Retry the same mutation id after `Retry-After` |
 | 503 | `retry` | retry **the same mutation id**, after `Retry-After` |
 
 The 503 is safe precisely because a repeated mutation id returns the stored

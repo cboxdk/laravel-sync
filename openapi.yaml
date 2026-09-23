@@ -54,14 +54,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PushResponse' }
-        '401': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/FromYourMiddleware' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
         '415': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
-        '503': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/FromYourMiddleware' }
+        '503': { $ref: '#/components/responses/Retriable' }
 
   /bootstrap:
     post:
@@ -81,14 +82,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BootstrapResponse' }
-        '401': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/FromYourMiddleware' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
         '415': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
-        '503': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/FromYourMiddleware' }
+        '503': { $ref: '#/components/responses/Retriable' }
 
   /delta:
     post:
@@ -108,14 +110,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeltaResponse' }
-        '401': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/FromYourMiddleware' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
         '415': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
-        '503': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/FromYourMiddleware' }
+        '503': { $ref: '#/components/responses/Retriable' }
 
 components:
   securitySchemes:
@@ -132,6 +135,28 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+
+    Retriable:
+      description: |
+        Busy - a lock wait, a deadlock, a dropped connection. Nothing was
+        committed. Send the identical request again, with the same mutation id.
+      headers:
+        Retry-After:
+          description: Seconds to wait, or an HTTP date.
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    FromYourMiddleware:
+      description: |
+        Answered by the host's own middleware before this package ran - its
+        authentication, its rate limiter - so the body is whatever that
+        middleware returns; Laravel's own answer `{"message": "..."}`. Branch on
+        the status, not on the body.
+      content:
+        application/json:
+          schema: { type: object }
 
   schemas:
     Error:
